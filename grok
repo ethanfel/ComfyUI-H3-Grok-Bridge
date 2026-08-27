@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Pull and send plain-text H3 prompt projects through Grok Bridge."""
+
+from __future__ import annotations
+
+import argparse
+import configparser
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+FORMAT = "h3_grok_bridge_workspace_v1"
+STATE_FILE = ".h3-grok-bridge.ini"
+PREFIX = "/minimax_h3_grok_bridge"
+
+
+class CliError(RuntimeError):
+    pass
+
+
+def text_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def atomic_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(value)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def api_request(server: str, path: str, token: str = "", payload: Any = None) -> Any:
+    url = server.rstrip("/") + PREFIX + path
+    headers = {"Accept": "application/json"}
+    data = None
+    method = "GET"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        method = "POST"
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            message = body.get("error") or str(exc)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            message = str(exc)
+        raise CliError(message) from exc
+    except urllib.error.URLError as exc:
+        raise CliError("Could not reach ComfyUI at %s: %s" % (server, exc.reason)) from exc
+
+
+def safe_filename(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("._-")
+    return (name or "scene")[:80]
+
+
+def load_state(directory: Path) -> tuple[configparser.ConfigParser, dict[str, dict[str, str]]]:
+    path = directory / STATE_FILE
+    if not path.is_file():
+        raise CliError("%s is not a Grok Bridge workspace; run grok pull first." % directory)
+    config = configparser.ConfigParser(interpolation=None)
+    config.optionxform = str
+    config.read(path, encoding="utf-8")
+    if config.get("bridge", "format", fallback="") != FORMAT:
+        raise CliError("Unsupported Grok Bridge workspace format.")
+    scenes = {}
+    for encoded_id, value in config.items("scenes"):
+        fields = value.split("\t")
+        if len(fields) != 3:
+            raise CliError("The Grok Bridge workspace state is damaged.")
+        scenes[urllib.parse.unquote(encoded_id)] = {
+            "path": fields[0], "hash": fields[1], "index": fields[2],
+        }
+    return config, scenes
+
+
+def save_state(directory: Path, server: str, project: dict[str, Any]) -> None:
+    config = configparser.ConfigParser(interpolation=None)
+    config.optionxform = str
+    config["bridge"] = {
+        "format": FORMAT,
+        "server": server.rstrip("/"),
+        "project": project["project_id"],
+        "revision": project["revision"],
+    }
+    config["scenes"] = {}
+    for scene in project["scenes"]:
+        relative = "scenes/%03d-%s.md" % (
+            int(scene["index"]), safe_filename(scene["id"]))
+        config["scenes"][urllib.parse.quote(scene["id"], safe="")] = "\t".join((
+            relative, scene["prompt_hash"], str(scene["index"]),
+        ))
+    from io import StringIO
+    output = StringIO()
+    config.write(output)
+    atomic_text(directory / STATE_FILE, output.getvalue())
+
+
+def human_value(value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, list):
+        return ", ".join(human_value(item) for item in value)
+    if isinstance(value, dict):
+        return "; ".join("%s=%s" % (key, human_value(item)) for key, item in value.items())
+    return str(value).replace("\n", " ")
+
+
+def project_markdown(project: dict[str, Any]) -> str:
+    lines = [
+        "# %s" % project["project_id"], "",
+        "This folder is a plain-text mirror of the live ComfyUI H3 prompt project.",
+        "Edit files under `scenes/`, then run `grok send` from this folder.",
+        "ComfyUI applies staged edits only after **Grok Pull** is clicked.", "",
+        "## Scenes", "",
+        "| # | Scene ID | Prompt file | Settings |",
+        "|---:|---|---|---|",
+    ]
+    for scene in project["scenes"]:
+        filename = "scenes/%03d-%s.md" % (
+            int(scene["index"]), safe_filename(scene["id"]))
+        settings = "; ".join(
+            "%s=%s" % (key, human_value(value))
+            for key, value in scene.get("metadata", {}).items()
+            if key != "id"
+        ) or "inherited"
+        lines.append("| %d | `%s` | `%s` | %s |" % (
+            scene["index"], scene["id"], filename, settings))
+    lines.extend(("", "See `SHARED.md` and `REFERENCES.md` for project context.", ""))
+    return "\n".join(lines)
+
+
+def references_markdown(project: dict[str, Any]) -> str:
+    lines = [
+        "# Reference and semantic context", "",
+        "These records describe tokens available to scene prompts. Media is not copied.", "",
+    ]
+    references = project.get("references") or []
+    if not references:
+        lines.extend(("No connected prompt reference nodes were discovered.", ""))
+        return "\n".join(lines)
+    for reference in references:
+        token = reference.get("native_token") or reference.get("semantic_token") or reference.get("tag")
+        lines.extend((
+            "## %s" % token,
+            "",
+            "- Kind: %s" % reference.get("kind", "reference"),
+            "- Native token: %s" % (reference.get("native_token") or "not available"),
+            "- Semantic token: %s" % (reference.get("semantic_token") or "not available"),
+            "- Active scenes: %s" % human_value(reference.get("active_scenes") or []),
+            "- Available scenes: %s" % human_value(reference.get("available_scenes") or "all"),
+            "- Selector: %s" % (reference.get("selector") or "prompt tag"),
+            "- Source: %s" % (reference.get("source") or "connected graph input"),
+        ))
+        for key, value in (reference.get("semantics") or {}).items():
+            lines.append("- %s: %s" % (key.replace("_", " ").title(), human_value(value)))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def guard_local_edits(directory: Path, old_scenes: dict[str, dict[str, str]],
+                      project: dict[str, Any], force: bool) -> None:
+    if force:
+        return
+    remote = {scene["id"]: scene for scene in project["scenes"]}
+    conflicts = []
+    for scene_id, record in old_scenes.items():
+        path = (directory / record["path"]).resolve()
+        try:
+            inside = os.path.commonpath((directory.resolve(), path)) == str(directory.resolve())
+        except ValueError:
+            inside = False
+        if not inside:
+            raise CliError("Workspace state contains an unsafe scene path.")
+        if not path.is_file():
+            continue
+        local_hash = text_hash(path.read_text(encoding="utf-8"))
+        remote_hash = remote.get(scene_id, {}).get("prompt_hash")
+        if local_hash not in (record["hash"], remote_hash):
+            conflicts.append(record["path"])
+    if conflicts:
+        raise CliError(
+            "Local edits would be overwritten: %s. Send them first or use --force."
+            % ", ".join(conflicts))
+
+
+def pull_command(args: argparse.Namespace) -> None:
+    server = args.server.rstrip("/")
+    query = urllib.parse.urlencode({"project_id": args.project})
+    project = api_request(server, "/project?" + query, args.token)
+    directory = Path(args.directory or args.project).expanduser().resolve()
+    old_scenes = {}
+    if (directory / STATE_FILE).is_file():
+        _old_config, old_scenes = load_state(directory)
+    guard_local_edits(directory, old_scenes, project, args.force)
+    directory.mkdir(parents=True, exist_ok=True)
+    atomic_text(directory / "PROJECT.md", project_markdown(project))
+    atomic_text(directory / "SHARED.md", str(project.get("shared_prompt") or ""))
+    atomic_text(directory / "REFERENCES.md", references_markdown(project))
+    for scene in project["scenes"]:
+        relative = "scenes/%03d-%s.md" % (
+            int(scene["index"]), safe_filename(scene["id"]))
+        atomic_text(directory / relative, scene["prompt"])
+    save_state(directory, server, project)
+    print("Pulled %d scenes to %s" % (len(project["scenes"]), directory))
+
+
+def selected_scene(scene_id: str, record: dict[str, str], requested: list[str]) -> bool:
+    if not requested:
+        return True
+    choices = {scene_id, record["index"], Path(record["path"]).stem}
+    return any(value in choices for value in requested)
+
+
+def send_command(args: argparse.Namespace) -> None:
+    directory = Path(args.directory).expanduser().resolve()
+    config, scenes = load_state(directory)
+    changes = []
+    for scene_id, record in scenes.items():
+        if not selected_scene(scene_id, record, args.scene):
+            continue
+        path = (directory / record["path"]).resolve()
+        if not path.is_file():
+            raise CliError("Missing scene file %s." % record["path"])
+        prompt = path.read_text(encoding="utf-8")
+        if text_hash(prompt) == record["hash"]:
+            continue
+        changes.append({
+            "scene_id": scene_id,
+            "base_prompt_hash": record["hash"],
+            "prompt": prompt,
+        })
+    if not changes:
+        print("No changed scene prompts to send.")
+        return
+    result = api_request(
+        config["bridge"]["server"], "/changes", args.token,
+        {
+            "project_id": config["bridge"]["project"],
+            "base_revision": config["bridge"]["revision"],
+            "changes": changes,
+        },
+    )
+    print(
+        "Staged %d scene edit%s as %s. Click Grok Pull in ComfyUI."
+        % (len(result["changes"]), "" if len(result["changes"]) == 1 else "s",
+           result["change_id"][:12]))
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(
+        prog="grok",
+        description="Mirror H3 ComfyUI scene prompts as plain Markdown files.",
+    )
+    subcommands = result.add_subparsers(dest="command", required=True)
+    pull = subcommands.add_parser("pull", help="Pull a published ComfyUI project.")
+    pull.add_argument("server", help="ComfyUI base URL, for example http://host:8188")
+    pull.add_argument("project", help="Bridge project id shown in the Prompt Editor")
+    pull.add_argument("directory", nargs="?", help="Destination; defaults to project id")
+    pull.add_argument("--force", action="store_true", help="Overwrite conflicting local edits")
+    pull.add_argument("--token", default=os.environ.get("COMFYUI_API_TOKEN", ""),
+                      help="Bearer token; prefer COMFYUI_API_TOKEN")
+    pull.set_defaults(function=pull_command)
+
+    send = subcommands.add_parser("send", help="Stage locally edited scene prompts.")
+    send.add_argument("directory", nargs="?", default=".", help="Workspace folder")
+    send.add_argument("--scene", action="append", default=[],
+                      help="Only send this scene id, number, or filename stem; repeatable")
+    send.add_argument("--token", default=os.environ.get("COMFYUI_API_TOKEN", ""),
+                      help="Bearer token; prefer COMFYUI_API_TOKEN")
+    send.set_defaults(function=send_command)
+    return result
+
+
+def main() -> int:
+    try:
+        args = parser().parse_args()
+        args.function(args)
+        return 0
+    except (CliError, OSError, KeyError) as exc:
+        print("grok: %s" % exc, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
