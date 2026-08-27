@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-h3-grok-bridge"
-version = "0.2.1"
+version = "0.3.0"
 description = "Revision-safe plain-text Grok workspace bridge for MiniMax H3 ComfyUI scene prompts."
 readme = "README.md"
 requires-python = ">=3.10"

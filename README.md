@@ -45,6 +45,20 @@ ln -s "$PWD/ComfyUI-H3-Grok-Bridge/h3-grok" ~/.local/bin/h3-grok
 
 You can always invoke it by its complete path instead.
 
+### Grok skill
+
+The repository includes a small `/h3-grok-bridge` skill that teaches Grok how
+to pull a project, use its scene and image context, and send scene edits. Install
+it for every Grok workspace with:
+
+```bash
+ln -s "$PWD/ComfyUI-H3-Grok-Bridge/.grok/skills/h3-grok-bridge" \
+  ~/.grok/skills/h3-grok-bridge
+```
+
+Grok can invoke it automatically for H3 Bridge work, or you can run
+`/h3-grok-bridge` explicitly.
+
 ## Workflow wiring
 
 ```text
