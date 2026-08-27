@@ -52,8 +52,9 @@ to pull a project, use its scene and image context, and send scene edits. Instal
 it for every Grok workspace with:
 
 ```bash
-ln -s "$PWD/ComfyUI-H3-Grok-Bridge/.grok/skills/h3-grok-bridge" \
-  ~/.grok/skills/h3-grok-bridge
+mkdir -p ~/.grok/skills/h3-grok-bridge
+cp "$PWD/ComfyUI-H3-Grok-Bridge/.grok/skills/h3-grok-bridge/SKILL.md" \
+  ~/.grok/skills/h3-grok-bridge/SKILL.md
 ```
 
 Grok can invoke it automatically for H3 Bridge work, or you can run
