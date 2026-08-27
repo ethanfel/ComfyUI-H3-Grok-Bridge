@@ -21,6 +21,7 @@ from typing import Any
 FORMAT = "h3_grok_bridge_workspace_v1"
 STATE_FILE = ".h3-grok-bridge.ini"
 PREFIX = "/minimax_h3_grok_bridge"
+MAX_IMAGE_BYTES = 100 * 1024 * 1024
 
 
 class CliError(RuntimeError):
@@ -36,6 +37,20 @@ def atomic_text(path: Path, value: str) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(value)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def atomic_bytes(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(value)
         os.replace(temporary, path)
     finally:
@@ -67,6 +82,45 @@ def api_request(server: str, path: str, token: str = "", payload: Any = None) ->
         except (UnicodeDecodeError, json.JSONDecodeError):
             message = str(exc)
         raise CliError(message) from exc
+    except urllib.error.URLError as exc:
+        raise CliError("Could not reach ComfyUI at %s: %s" % (server, exc.reason)) from exc
+
+
+def api_download(server: str, asset: dict[str, Any], token: str = "") -> bytes:
+    filename = str(asset.get("filename") or "").strip()
+    subfolder = str(asset.get("subfolder") or "").strip()
+    media_type = str(asset.get("type") or "input").strip().lower()
+    if not filename or media_type not in {"input", "output", "temp"}:
+        raise CliError("ComfyUI published an invalid image asset descriptor.")
+    query = urllib.parse.urlencode({
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": media_type,
+    })
+    headers = {"Accept": "image/*"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(
+        server.rstrip("/") + "/view?" + query,
+        headers=headers,
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            try:
+                declared = int(response.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                declared = 0
+            if declared > MAX_IMAGE_BYTES:
+                raise CliError("Image asset %s exceeds the 100 MiB limit." % filename)
+            content = response.read(MAX_IMAGE_BYTES + 1)
+            if len(content) > MAX_IMAGE_BYTES:
+                raise CliError("Image asset %s exceeds the 100 MiB limit." % filename)
+            if not content:
+                raise CliError("ComfyUI returned an empty image asset for %s." % filename)
+            return content
+    except urllib.error.HTTPError as exc:
+        raise CliError("Could not download image asset %s: %s" % (filename, exc)) from exc
     except urllib.error.URLError as exc:
         raise CliError("Could not reach ComfyUI at %s: %s" % (server, exc.reason)) from exc
 
@@ -154,16 +208,19 @@ def project_markdown(project: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def references_markdown(project: dict[str, Any]) -> str:
+def references_markdown(
+        project: dict[str, Any], asset_paths: dict[int, str] | None = None) -> str:
+    asset_paths = asset_paths or {}
     lines = [
         "# Reference and semantic context", "",
-        "These records describe tokens available to scene prompts. Media is not copied.", "",
+        "These records describe tokens available to scene prompts. Connected picture files "
+        "are copied into `assets/`.", "",
     ]
     references = project.get("references") or []
     if not references:
         lines.extend(("No connected prompt reference nodes were discovered.", ""))
         return "\n".join(lines)
-    for reference in references:
+    for index, reference in enumerate(references):
         token = reference.get("native_token") or reference.get("semantic_token") or reference.get("tag")
         lines.extend((
             "## %s" % token,
@@ -176,10 +233,47 @@ def references_markdown(project: dict[str, Any]) -> str:
             "- Selector: %s" % (reference.get("selector") or "prompt tag"),
             "- Source: %s" % (reference.get("source") or "connected graph input"),
         ))
+        if index in asset_paths:
+            local = asset_paths[index]
+            lines.append("- Local asset: [%s](%s)" % (Path(local).name, local))
+        elif reference.get("kind") == "picture":
+            lines.append("- Local asset: unavailable (no file-backed ComfyUI image found)")
+        else:
+            lines.append("- Local asset: not copied (picture references only)")
         for key, value in (reference.get("semantics") or {}).items():
             lines.append("- %s: %s" % (key.replace("_", " ").title(), human_value(value)))
         lines.append("")
     return "\n".join(lines)
+
+
+def download_picture_assets(
+        directory: Path, project: dict[str, Any], server: str,
+        token: str = "") -> dict[int, str]:
+    paths: dict[int, str] = {}
+    downloaded: dict[tuple[str, str, str], str] = {}
+    for index, reference in enumerate(project.get("references") or []):
+        if reference.get("kind") != "picture" or not isinstance(reference.get("asset"), dict):
+            continue
+        asset = reference["asset"]
+        key = (
+            str(asset.get("type") or "input"),
+            str(asset.get("subfolder") or ""),
+            str(asset.get("filename") or ""),
+        )
+        if key in downloaded:
+            paths[index] = downloaded[key]
+            continue
+        token_name = (
+            reference.get("tag") or reference.get("native_token")
+            or reference.get("semantic_token") or "picture"
+        )
+        source_name = safe_filename(Path(key[2].replace("\\", "/")).name)
+        relative = "assets/%03d-%s-%s" % (
+            index + 1, safe_filename(str(token_name)), source_name)
+        atomic_bytes(directory / relative, api_download(server, asset, token))
+        downloaded[key] = relative
+        paths[index] = relative
+    return paths
 
 
 def guard_local_edits(directory: Path, old_scenes: dict[str, dict[str, str]],
@@ -218,15 +312,18 @@ def pull_command(args: argparse.Namespace) -> None:
         _old_config, old_scenes = load_state(directory)
     guard_local_edits(directory, old_scenes, project, args.force)
     directory.mkdir(parents=True, exist_ok=True)
+    asset_paths = download_picture_assets(directory, project, server, args.token)
     atomic_text(directory / "PROJECT.md", project_markdown(project))
     atomic_text(directory / "SHARED.md", str(project.get("shared_prompt") or ""))
-    atomic_text(directory / "REFERENCES.md", references_markdown(project))
+    atomic_text(directory / "REFERENCES.md", references_markdown(project, asset_paths))
     for scene in project["scenes"]:
         relative = "scenes/%03d-%s.md" % (
             int(scene["index"]), safe_filename(scene["id"]))
         atomic_text(directory / relative, scene["prompt"])
     save_state(directory, server, project)
-    print("Pulled %d scenes to %s" % (len(project["scenes"]), directory))
+    print("Pulled %d scenes and %d image asset%s to %s" % (
+        len(project["scenes"]), len(set(asset_paths.values())),
+        "" if len(set(asset_paths.values())) == 1 else "s", directory))
 
 
 def selected_scene(scene_id: str, record: dict[str, str], requested: list[str]) -> bool:

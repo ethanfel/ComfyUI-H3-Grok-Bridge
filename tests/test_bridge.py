@@ -37,6 +37,7 @@ def project(prompt="Opening."):
         "references": [{
             "kind": "picture", "tag": "hero", "native_token": "@hero",
             "semantic_token": "#hero[0.00s]", "active_scenes": [1],
+            "asset": {"filename": "hero.png", "subfolder": "cast", "type": "input"},
         }],
     }
 
@@ -50,6 +51,7 @@ def test_publish_stage_pull_ack_and_conflict():
         snapshot = store.get("nightly_test")
         assert snapshot["format"] == bridge.PROJECT_FORMAT
         assert snapshot["scenes"][0]["prompt_hash"] == bridge.prompt_hash("Opening.")
+        assert snapshot["references"][0]["asset"]["filename"] == "hero.png"
 
         staged = store.stage({
             "project_id": "nightly_test",

@@ -89,29 +89,79 @@ function usedByPrompt(prompt, tag, semanticOnly = false) {
     return semanticOnly ? semantic.test(prompt) : native.test(prompt) || semantic.test(prompt);
 }
 
-function mediaLabel(node) {
-    const candidates = [
-        node,
-        inputSource(node, "image"), inputSource(node, "video"),
-        inputSource(node, "audio"), inputSource(node, "source_video"),
-        inputSource(node, "source_timeline"),
-    ].filter(Boolean);
-    const names = new Set([
-        "image", "video", "audio", "video_path", "audio_path", "filename",
-    ]);
-    for (const source of candidates) {
-        for (const widget of source.widgets ?? []) {
-            if (!names.has(String(widget.name ?? ""))) continue;
-            const value = widget.value;
-            if (value && typeof value === "object" && value.filename) {
-                return [value.subfolder, value.filename].filter(Boolean).join("/");
+function mediaExtension(kind) {
+    if (kind === "picture") return /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i;
+    if (kind === "audio") return /\.(?:aac|flac|m4a|mp3|ogg|opus|wav)$/i;
+    return /\.(?:m4v|mkv|mov|mp4|webm)$/i;
+}
+
+function widgetAsset(value, kind) {
+    let filename = "";
+    let subfolder = "";
+    let type = "input";
+    if (value && typeof value === "object" && value.filename) {
+        filename = String(value.filename).trim();
+        subfolder = String(value.subfolder ?? "").trim();
+        type = String(value.type ?? "input").toLowerCase();
+    } else if (typeof value === "string") {
+        let text = value.trim();
+        if (!text || /^(?:blob:|data:)/i.test(text)) return null;
+        if (/^(?:https?:|\/)/i.test(text)) {
+            try {
+                const url = new URL(text, "http://comfy.invalid");
+                if (!/(?:^|\/)view$/i.test(url.pathname)) return null;
+                filename = url.searchParams.get("filename") ?? "";
+                subfolder = url.searchParams.get("subfolder") ?? "";
+                type = (url.searchParams.get("type") ?? "input").toLowerCase();
+            } catch (_error) {
+                return null;
             }
-            if (typeof value === "string" && value.trim()) {
-                return value.trim().replace(/\\/g, "/").split("/").at(-1);
+        } else {
+            const annotated = text.match(/\s+\[(input|output|temp)\]\s*$/i);
+            if (annotated) {
+                type = annotated[1].toLowerCase();
+                text = text.slice(0, annotated.index).trim();
             }
+            text = text.replaceAll("\\", "/").replace(/^\/+/, "");
+            const slash = text.lastIndexOf("/");
+            filename = slash >= 0 ? text.slice(slash + 1) : text;
+            subfolder = slash >= 0 ? text.slice(0, slash) : "";
         }
     }
-    return "";
+    if (!filename || !mediaExtension(kind).test(filename)) return null;
+    if (!["input", "output", "temp"].includes(type)) type = "input";
+    return {filename, subfolder:subfolder.replaceAll("\\", "/"), type};
+}
+
+function mediaAsset(start, kind) {
+    const queue = [start];
+    const seen = new Set();
+    while (queue.length) {
+        const node = queue.shift();
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        if (kind === "picture") {
+            const rendered = node.imgs?.[0];
+            const asset = widgetAsset(
+                typeof rendered === "string" ? rendered : rendered?.src, kind);
+            if (asset) return asset;
+        }
+        for (const widget of node.widgets ?? []) {
+            const asset = widgetAsset(widget.value, kind);
+            if (asset) return asset;
+        }
+        for (const input of node.inputs ?? []) {
+            const parent = inputSource(node, input.name);
+            if (parent) queue.push(parent);
+        }
+    }
+    return null;
+}
+
+function mediaLabel(asset) {
+    return asset
+        ? [asset.subfolder, asset.filename].filter(Boolean).join("/")
+        : "";
 }
 
 function promptUsesToken(plan, token) {
@@ -125,6 +175,7 @@ function coreReferenceRecords(node, plan) {
     const type = nodeType(node);
     const result = [];
     const add = (kind, token, source, availableScenes = null) => {
+        const asset = mediaAsset(source, kind);
         result.push({
             kind,
             tag:"",
@@ -134,7 +185,8 @@ function coreReferenceRecords(node, plan) {
             selector:"connected native input",
             active_scenes:promptUsesToken(plan, token),
             available_scenes:availableScenes,
-            source:mediaLabel(source),
+            source:mediaLabel(asset),
+            asset,
             node_type:type,
             semantics:{},
         });
@@ -196,6 +248,7 @@ export function collectProjectReferences(editorNode, plan) {
                 : usedByPrompt(prompt, tag, descriptor.semanticOnly);
             if (active) activeScenes.push(offset + 1);
         }
+        const asset = mediaAsset(node, descriptor.kind);
         records.push({
             kind:descriptor.kind,
             tag,
@@ -205,7 +258,8 @@ export function collectProjectReferences(editorNode, plan) {
             semantic_only:Boolean(descriptor.semanticOnly),
             selector,
             active_scenes:activeScenes,
-            source:mediaLabel(node),
+            source:mediaLabel(asset),
+            asset,
             node_type:nodeType(node),
             semantics:semanticFields(node),
         });

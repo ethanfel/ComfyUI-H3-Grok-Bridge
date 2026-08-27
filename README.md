@@ -17,6 +17,8 @@ That node pack is not modified or vendored.
 - exports `SHARED.md`, a readable `PROJECT.md`, and `REFERENCES.md` containing
   native `@tag`, semantic `#tag[time]`, motion-role, subject, selector, source,
   and active-scene context;
+- downloads file-backed picture references from the remote ComfyUI host into
+  `assets/` and links them from `REFERENCES.md`;
 - stages local edits instead of silently changing the workflow;
 - rejects stale edits when either the ComfyUI Plan or a scene changed since
   the local pull.
@@ -64,6 +66,10 @@ so ordinary H3 Prompt Editor workflows are unchanged.
    ```bash
    h3-grok pull http://COMFYUI-HOST:8188 my_project ./my_project
    ```
+
+   Connected image references are downloaded during this step. If this folder
+   was pulled before image support was installed, click **Grok Send** again and
+   repeat the command so the new media descriptors are published.
 
 3. Ask Grok to read `PROJECT.md`, `SHARED.md`, and `REFERENCES.md`, then edit
    one or more files under `scenes/` directly. For the real Grok CLI:
@@ -115,6 +121,8 @@ my_project/
 ├── SHARED.md
 ├── REFERENCES.md
 ├── .h3-grok-bridge.ini
+├── assets/
+│   └── 001-hero-hero.png
 └── scenes/
     ├── 001-intro.md
     ├── 002-hallway.md
@@ -124,6 +132,11 @@ my_project/
 `.h3-grok-bridge.ini` contains only the server URL, project/revision ids,
 scene-to-file mappings, and hashes needed for conflict checks. It contains no
 prompt JSON and no credentials.
+
+Picture references backed by ComfyUI `input`, `output`, or `temp` files are
+copied automatically, up to 100 MiB per image. Video, motion, and audio sources
+remain descriptive context only, avoiding unexpectedly large prompt-project
+downloads.
 
 ## Scope
 

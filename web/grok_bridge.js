@@ -6,7 +6,7 @@ import {
     buildProjectPayload,
     nodeType,
     upstreamBridge,
-} from "./grok_bridge_core.mjs?v=0.1.0";
+} from "./grok_bridge_core.mjs?v=0.2.0";
 
 const PREFIX = "/minimax_h3_grok_bridge";
 

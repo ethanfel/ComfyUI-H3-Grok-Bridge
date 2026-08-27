@@ -23,15 +23,26 @@ const motion = node(6, "MiniMaxH3TaggedMotionReference", [
     ["tag", "walk"], ["target_subject", "<Subject 1>"],
     ["motion_description", "a measured walk"],
 ]);
-const nodes = [planNode, bridge, editor, picture, semantic, motion];
+const imageLoader = node(7, "LoadImage", [["image", "portraits/hero.png [input]"]]);
+const generatedImage = node(8, "PreviewImage");
+generatedImage.imgs = [{
+    src:"http://comfy:8188/view?filename=location.webp&subfolder=refs&type=output&rand=1",
+}];
+const nodes = [
+    planNode, bridge, editor, picture, semantic, motion, imageLoader, generatedImage,
+];
 const links = {
     10:{origin_id:1, target_id:2},
     11:{origin_id:2, target_id:3},
+    12:{origin_id:7, target_id:4},
+    13:{origin_id:8, target_id:5},
 };
 const graph = {links, _nodes:nodes, getNodeById:(id) => nodes.find((item) => item.id === id)};
 nodes.forEach((item) => { item.graph = graph; });
 bridge.inputs = [{name:"plan", link:10}];
 editor.inputs = [{name:"plan", link:11}];
+picture.inputs = [{name:"image", link:12}];
+semantic.inputs = [{name:"image", link:13}];
 
 assert.equal(upstreamBridge(editor), bridge);
 const plan = {
@@ -43,7 +54,14 @@ const plan = {
 };
 const refs = collectProjectReferences(editor, plan);
 assert.equal(refs.find((item) => item.tag === "hero").semantic_token, "#hero[0.00s]");
+assert.deepEqual(refs.find((item) => item.tag === "hero").asset, {
+    filename:"hero.png", subfolder:"portraits", type:"input",
+});
+assert.equal(refs.find((item) => item.tag === "hero").source, "portraits/hero.png");
 assert.deepEqual(refs.find((item) => item.tag === "location").active_scenes, [2]);
+assert.deepEqual(refs.find((item) => item.tag === "location").asset, {
+    filename:"location.webp", subfolder:"refs", type:"output",
+});
 assert.equal(refs.find((item) => item.tag === "walk").semantics.target_subject, "<Subject 1>");
 
 const payload = buildProjectPayload(editor, {plan, planNode}, bridge);
@@ -63,4 +81,3 @@ assert.match(frontend, /_h3RichPromptState/);
 assert.match(frontend, /state\.planWidget\.value = value/);
 assert.match(frontend, /await request\("ack"/);
 console.log("H3 Grok Bridge frontend: conditional controls, semantics and scene edits pass");
-
