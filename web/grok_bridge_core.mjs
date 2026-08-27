@@ -1,4 +1,5 @@
 export const BRIDGE_NODE_TYPE = "MiniMaxH3GrokBridge";
+export const PROJECT_ASSET_MANAGER_TYPE = "MiniMaxH3ProjectAssetManager";
 export const EDITOR_NODE_TYPES = Object.freeze([
     "MiniMaxH3ChainScenePromptEditor",
     "MiniMaxH3ChainRichScenePromptEditor",
@@ -22,30 +23,163 @@ export function nodeType(node) {
 }
 
 function graphLink(graph, linkId) {
+    if (linkId == null) return null;
     return graph?.links?.get?.(linkId) ?? graph?.links?.[linkId] ?? null;
 }
 
-function inputSource(node, name) {
-    const input = node?.inputs?.find((item) => item.name === name);
-    const link = graphLink(node?.graph, input?.link);
-    return link ? node.graph?.getNodeById?.(link.origin_id) ?? null : null;
+function graphLinks(graph) {
+    if (graph?.links?.values) return [...graph.links.values()];
+    return Object.values(graph?.links ?? {});
 }
 
-export function upstreamBridge(start) {
+const TRANSPARENT_REROUTE_TYPES = new Set(["Reroute", "Reroute (rgthree)"]);
+const SUBGRAPH_INPUT_ID = "-10";
+const SUBGRAPH_OUTPUT_ID = "-20";
+
+function isGraphIoNode(id, expected) {
+    return String(id) === expected;
+}
+
+function rootGraph(graph) {
+    return graph?.rootGraph ?? graph ?? null;
+}
+
+function graphDescendants(graph, seen = new Set()) {
+    if (!graph?._nodes || seen.has(graph)) return [];
+    seen.add(graph);
+    const result = [];
+    for (const node of graph._nodes) {
+        if (!node?.subgraph || seen.has(node.subgraph)) continue;
+        result.push(node.subgraph);
+        result.push(...graphDescendants(node.subgraph, seen));
+    }
+    return result;
+}
+
+function subgraphHostNode(graph) {
+    if (!graph) return null;
+    const root = rootGraph(graph);
+    if (!root || graph === root) return null;
+    for (const candidate of [root, ...graphDescendants(root)]) {
+        const host = candidate?._nodes?.find((node) => node?.subgraph === graph);
+        if (host) return host;
+    }
+    return null;
+}
+
+function connectionFromLink(graph, link) {
+    if (!graph || !link) return null;
+    if (isGraphIoNode(link.origin_id, SUBGRAPH_INPUT_ID)) {
+        const host = subgraphHostNode(graph);
+        const input = host?.inputs?.[Number(link.origin_slot ?? 0)];
+        return connectionFromLink(host?.graph, graphLink(host?.graph, input?.link));
+    }
+    const source = graph.getNodeById?.(link.origin_id) ?? null;
+    return source ? {source, originSlot:Number(link.origin_slot ?? 0)} : null;
+}
+
+function subgraphOutputConnection(node, originSlot) {
+    const graph = node?.subgraph;
+    if (!graph) return null;
+    const slotIndex = Number(originSlot ?? 0);
+    const slot = graph.outputs?.[slotIndex] ?? graph.outputNode?.slots?.[slotIndex];
+    const linked = (slot?.linkIds ?? [])
+        .map((linkId) => graphLink(graph, linkId)).filter(Boolean);
+    const candidates = linked.length ? linked : graphLinks(graph).filter(
+        (link) => isGraphIoNode(link?.target_id, SUBGRAPH_OUTPUT_ID)
+            && Number(link?.target_slot ?? -1) === slotIndex,
+    );
+    const link = candidates.find(
+        (item) => isGraphIoNode(item?.target_id, SUBGRAPH_OUTPUT_ID)
+            && Number(item?.target_slot ?? -1) === slotIndex,
+    ) ?? candidates[0];
+    return connectionFromLink(graph, link);
+}
+
+function directInputConnection(node, name = null) {
+    const input = name === null
+        ? node?.inputs?.find((item) => item.link != null)
+        : node?.inputs?.find((item) => item.name === name);
+    return connectionFromLink(node?.graph, graphLink(node?.graph, input?.link));
+}
+
+function graphAncestors(graph) {
+    if (!graph) return [];
+    const result = [];
+    const seen = new Set();
+    let current = graph;
+    while (current && !seen.has(current)) {
+        result.push(current);
+        seen.add(current);
+        const host = subgraphHostNode(current);
+        current = host?.graph ?? null;
+    }
+    return result;
+}
+
+function setGetName(node) {
+    return String(node?.widgets?.[0]?.value ?? "");
+}
+
+function setNodeFor(getNode) {
+    const name = setGetName(getNode);
+    if (!name) return null;
+    for (const graph of graphAncestors(getNode?.graph)) {
+        const setter = graph?._nodes?.find(
+            (node) => nodeType(node) === "SetNode" && setGetName(node) === name,
+        );
+        if (setter) return setter;
+    }
+    return null;
+}
+
+function transparentInputConnection(node, originSlot = 0) {
+    if (node?.subgraph) return subgraphOutputConnection(node, originSlot);
+    const type = nodeType(node);
+    if (type === "GetNode") {
+        const setter = setNodeFor(node);
+        return setter ? directInputConnection(setter) : null;
+    }
+    if (type === "SetNode" || TRANSPARENT_REROUTE_TYPES.has(type)) {
+        return directInputConnection(node);
+    }
+    return null;
+}
+
+function inputConnection(node, name) {
+    let current = directInputConnection(node, name);
+    const seen = new Set();
+    while (current?.source && !seen.has(current.source)) {
+        seen.add(current.source);
+        const next = transparentInputConnection(current.source, current.originSlot);
+        if (!next) break;
+        current = next;
+    }
+    return current;
+}
+
+function inputSource(node, name) {
+    return inputConnection(node, name)?.source ?? null;
+}
+
+function upstreamNode(start, wantedType) {
     const queue = [start];
     const seen = new Set();
     while (queue.length) {
         const node = queue.shift();
         if (!node || seen.has(node)) continue;
         seen.add(node);
-        if (node !== start && nodeType(node) === BRIDGE_NODE_TYPE) return node;
+        if (node !== start && nodeType(node) === wantedType) return node;
         for (const input of node.inputs ?? []) {
-            const link = graphLink(node.graph, input.link);
-            const parent = link ? node.graph?.getNodeById?.(link.origin_id) : null;
+            const parent = inputSource(node, input.name);
             if (parent) queue.push(parent);
         }
     }
     return null;
+}
+
+export function upstreamBridge(start) {
+    return upstreamNode(start, BRIDGE_NODE_TYPE);
 }
 
 function allNodes(graph, result = [], seen = new Set()) {
@@ -223,11 +357,91 @@ function semanticFields(node) {
         .map((widget) => [widget.name, widget.value]));
 }
 
+function projectCatalog(node) {
+    if (nodeType(node) !== PROJECT_ASSET_MANAGER_TYPE) return null;
+    try {
+        const value = JSON.parse(String(widgetValue(node, "catalog_json", "")));
+        return value && Array.isArray(value.assets) ? value : null;
+    } catch (_error) {
+        return null;
+    }
+}
+
+function projectAssetKind(asset) {
+    if (["picture", "semantic_anchor"].includes(asset?.role)) return "picture";
+    if (asset?.role === "motion") return "motion";
+    if (asset?.role === "video") return "video";
+    if (asset?.role === "audio_reference") return "audio";
+    if (asset?.role === "source_track" && asset?.kind === "video") return "video";
+    if (asset?.role === "source_track" && asset?.kind === "audio") return "audio";
+    return null;
+}
+
+function projectAssetDescriptor(catalog, asset) {
+    const relative = String(asset?.relative_path ?? "").replaceAll("\\", "/");
+    const filename = String(asset?.original_name || relative.split("/").pop() || "");
+    return {
+        provider:"h3_project_assets",
+        project:String(catalog?.project ?? ""),
+        asset_id:String(asset?.id ?? ""),
+        filename,
+        mime_type:String(asset?.mime_type ?? ""),
+        sha256:String(asset?.sha256 ?? ""),
+    };
+}
+
+export function projectAssetReferenceRecords(manager, plan) {
+    const catalog = projectCatalog(manager);
+    if (!catalog) return [];
+    const shots = plan?.shots ?? [];
+    const shared = promptText(plan?.prompt_prefix ?? plan?.global_prompt);
+    const managerSemantics = semanticFields(manager);
+    const result = [];
+    for (const entry of catalog.assets) {
+        if (!entry?.enabled) continue;
+        const kind = projectAssetKind(entry);
+        const tag = cleanTag(entry.tag);
+        if (!kind || !tag) continue;
+        const semanticOnly = entry.role === "semantic_anchor";
+        const sourceTrack = entry.role === "source_track";
+        const activeScenes = sourceTrack
+            ? shots.map((_shot, offset) => offset + 1)
+            : shots.flatMap((shot, offset) => {
+                const prompt = [shared, promptText(shot?.prompt)]
+                    .filter(Boolean).join("\n\n");
+                return usedByPrompt(prompt, tag, semanticOnly) ? [offset + 1] : [];
+            });
+        result.push({
+            kind,
+            tag,
+            native_token:semanticOnly || sourceTrack ? null : `@${tag}`,
+            semantic_token:kind === "picture" && !sourceTrack
+                ? `#${tag}[0.00s]` : null,
+            semantic_only:semanticOnly,
+            selector:sourceTrack ? "project source track"
+                : semanticOnly ? "semantic prompt tag" : "prompt tag",
+            active_scenes:activeScenes,
+            source:`H3 Project Assets “${catalog.project}” / ${entry.original_name || tag}`,
+            asset:projectAssetDescriptor(catalog, entry),
+            node_type:PROJECT_ASSET_MANAGER_TYPE,
+            semantics:{
+                project_asset_role:String(entry.role ?? ""),
+                ...managerSemantics,
+                ...(entry.options && typeof entry.options === "object" ? entry.options : {}),
+            },
+        });
+    }
+    return result;
+}
+
 export function collectProjectReferences(editorNode, plan) {
     const root = editorNode?.graph?.rootGraph ?? editorNode?.graph;
     const shots = plan?.shots ?? [];
     const shared = promptText(plan?.prompt_prefix ?? plan?.global_prompt);
-    const records = [];
+    const manager = upstreamNode(editorNode, PROJECT_ASSET_MANAGER_TYPE);
+    const managed = projectAssetReferenceRecords(manager, plan);
+    const managedTags = new Set(managed.map((record) => record.tag.toLowerCase()));
+    const records = [...managed];
     for (const node of allNodes(root)) {
         if (["MiniMaxH3ReferenceToVideo", "MiniMaxH3ImageToVideo"].includes(nodeType(node))) {
             records.push(...coreReferenceRecords(node, plan));
@@ -237,6 +451,7 @@ export function collectProjectReferences(editorNode, plan) {
         if (!descriptor) continue;
         const tag = cleanTag(widgetValue(node, descriptor.tag, ""));
         if (!tag) continue;
+        if (managedTags.has(tag.toLowerCase())) continue;
         const selector = descriptor.scheduled
             ? String(widgetValue(node, "scenes", "all") || "all") : "prompt tag";
         const activeScenes = [];

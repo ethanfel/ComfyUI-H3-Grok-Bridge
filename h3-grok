@@ -88,20 +88,35 @@ def api_request(server: str, path: str, token: str = "", payload: Any = None) ->
 
 def api_download(server: str, asset: dict[str, Any], token: str = "") -> bytes:
     filename = str(asset.get("filename") or "").strip()
-    subfolder = str(asset.get("subfolder") or "").strip()
-    media_type = str(asset.get("type") or "input").strip().lower()
-    if not filename or media_type not in {"input", "output", "temp"}:
-        raise CliError("ComfyUI published an invalid image asset descriptor.")
-    query = urllib.parse.urlencode({
-        "filename": filename,
-        "subfolder": subfolder,
-        "type": media_type,
-    })
+    provider = str(asset.get("provider") or "").strip().lower()
+    if provider == "h3_project_assets":
+        project = str(asset.get("project") or "").strip()
+        asset_id = str(asset.get("asset_id") or "").strip()
+        if not filename or not project or not asset_id:
+            raise CliError("ComfyUI published an invalid project image descriptor.")
+        query = urllib.parse.urlencode({
+            "project": project, "asset": asset_id, "variant": "original",
+        })
+        url = (
+            server.rstrip("/")
+            + "/minimax_h3_context_loop/project-assets/media?" + query
+        )
+    else:
+        subfolder = str(asset.get("subfolder") or "").strip()
+        media_type = str(asset.get("type") or "input").strip().lower()
+        if not filename or media_type not in {"input", "output", "temp"}:
+            raise CliError("ComfyUI published an invalid image asset descriptor.")
+        query = urllib.parse.urlencode({
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": media_type,
+        })
+        url = server.rstrip("/") + "/view?" + query
     headers = {"Accept": "image/*"}
     if token:
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(
-        server.rstrip("/") + "/view?" + query,
+        url,
         headers=headers,
         method="GET",
     )
@@ -213,8 +228,8 @@ def references_markdown(
     asset_paths = asset_paths or {}
     lines = [
         "# Reference and semantic context", "",
-        "These records describe tokens available to scene prompts. Connected picture files "
-        "are copied into `assets/`.", "",
+        "These records describe tokens available to scene prompts. Project Carousel and "
+        "connected picture files are copied into `assets/`.", "",
     ]
     references = project.get("references") or []
     if not references:
@@ -250,18 +265,25 @@ def download_picture_assets(
         directory: Path, project: dict[str, Any], server: str,
         token: str = "") -> dict[int, str]:
     paths: dict[int, str] = {}
-    downloaded: dict[tuple[str, str, str], str] = {}
-    claimed: dict[str, tuple[str, str, str]] = {}
+    downloaded: dict[tuple[str, ...], str] = {}
+    claimed: dict[str, tuple[str, ...]] = {}
     for index, reference in enumerate(project.get("references") or []):
         if reference.get("kind") != "picture" or not isinstance(reference.get("asset"), dict):
             continue
         asset = reference["asset"]
-        key = (
-            str(asset.get("type") or "input"),
-            str(asset.get("subfolder") or ""),
-            str(asset.get("filename") or ""),
-        )
-        source_name = Path(key[2].replace("\\", "/")).name
+        if asset.get("provider") == "h3_project_assets":
+            key = (
+                "h3_project_assets",
+                str(asset.get("project") or ""),
+                str(asset.get("asset_id") or ""),
+            )
+        else:
+            key = (
+                str(asset.get("type") or "input"),
+                str(asset.get("subfolder") or ""),
+                str(asset.get("filename") or ""),
+            )
+        source_name = Path(str(asset.get("filename") or "").replace("\\", "/")).name
         source_suffix = Path(source_name).suffix.lower()
         suffix = source_suffix if re.fullmatch(r"\.[a-z0-9]{1,10}", source_suffix) else ""
         old_token_name = (

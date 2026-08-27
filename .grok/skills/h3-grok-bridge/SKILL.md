@@ -23,7 +23,8 @@ Use `h3-grok` for bridge transport. The `grok` command is the agent itself.
 ## Read and edit
 
 1. Read `PROJECT.md`, `SHARED.md`, and `REFERENCES.md` before editing.
-2. Inspect relevant images under `assets/`. Each filename is its reference tag:
+2. Inspect relevant images under `assets/`. Images from the H3 Project Asset
+   Carousel and legacy reference nodes use their tag as the filename:
    `assets/hero.png` maps to `@hero`, and semantic tags are documented in
    `REFERENCES.md` as `#tag[time]`.
 3. Edit only the requested files under `scenes/`. A scene file contains prompt

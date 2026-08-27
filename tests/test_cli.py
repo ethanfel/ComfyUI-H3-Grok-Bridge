@@ -72,6 +72,56 @@ def test_workspace_state_and_markdown():
         assert "](assets/hero.png)" in references
 
 
+def test_project_carousel_image_download():
+    asset = {
+        "provider": "h3_project_assets",
+        "project": "episode",
+        "asset_id": "asset-123",
+        "filename": "original hero.webp",
+    }
+    urls = []
+
+    class Response:
+        headers = {"Content-Length": "4"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read(_limit):
+            return b"webp"
+
+    original_urlopen = cli.urllib.request.urlopen
+    try:
+        cli.urllib.request.urlopen = lambda request, timeout=0: (
+            urls.append((request.full_url, timeout)) or Response()
+        )
+        assert cli.api_download("http://comfy:8188", asset) == b"webp"
+    finally:
+        cli.urllib.request.urlopen = original_urlopen
+    assert urls == [(
+        "http://comfy:8188/minimax_h3_context_loop/project-assets/media?"
+        "project=episode&asset=asset-123&variant=original",
+        60,
+    )]
+    data = project()
+    data["references"][0]["asset"] = asset
+    original_download = cli.api_download
+    try:
+        cli.api_download = lambda *_args: b"carousel-image"
+        with tempfile.TemporaryDirectory() as raw:
+            paths = cli.download_picture_assets(
+                pathlib.Path(raw), data, "http://comfy:8188")
+            assert paths == {0: "assets/hero.webp"}
+            assert (pathlib.Path(raw) / paths[0]).read_bytes() == b"carousel-image"
+    finally:
+        cli.api_download = original_download
+
+
 if __name__ == "__main__":
     test_workspace_state_and_markdown()
+    test_project_carousel_image_download()
     print("H3 Grok Bridge CLI: plain workspace state, context and overwrite guard pass")
