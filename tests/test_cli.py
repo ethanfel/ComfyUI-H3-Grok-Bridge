@@ -4,7 +4,7 @@ import tempfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-loader = importlib.machinery.SourceFileLoader("h3_grok_cli", str(ROOT / "grok"))
+loader = importlib.machinery.SourceFileLoader("h3_grok_cli", str(ROOT / "h3-grok"))
 cli = loader.load_module()
 
 
@@ -54,4 +54,3 @@ def test_workspace_state_and_markdown():
 if __name__ == "__main__":
     test_workspace_state_and_markdown()
     print("H3 Grok Bridge CLI: plain workspace state, context and overwrite guard pass")
-

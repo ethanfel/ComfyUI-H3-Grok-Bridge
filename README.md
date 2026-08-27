@@ -38,7 +38,7 @@ The CLI has no third-party Python dependencies. On Linux/macOS, optionally put
 it on your path:
 
 ```bash
-ln -s "$PWD/ComfyUI-H3-Grok-Bridge/grok" ~/.local/bin/grok
+ln -s "$PWD/ComfyUI-H3-Grok-Bridge/h3-grok" ~/.local/bin/h3-grok
 ```
 
 You can always invoke it by its complete path instead.
@@ -62,26 +62,34 @@ so ordinary H3 Prompt Editor workflows are unchanged.
 2. On the machine where Grok works, pull it:
 
    ```bash
-   grok pull http://COMFYUI-HOST:8188 my_project ./my_project
+   h3-grok pull http://COMFYUI-HOST:8188 my_project ./my_project
    ```
 
 3. Ask Grok to read `PROJECT.md`, `SHARED.md`, and `REFERENCES.md`, then edit
-   one or more files under `scenes/` directly.
+   one or more files under `scenes/` directly. For the real Grok CLI:
+
+   ```bash
+   cd ./my_project
+   grok
+   ```
+
+   `grok` remains xAI's CLI; this add-on deliberately uses the distinct
+   `h3-grok` helper name.
 4. Stage changed prompts:
 
    ```bash
-   grok send ./my_project
+   h3-grok send ./my_project
    # or one scene only
-   grok send ./my_project --scene intro
+   h3-grok send ./my_project --scene intro
    ```
 
 5. Click **Grok Pull** in ComfyUI. The editor verifies the base project
    revision, applies the changed scenes to the real Plan widget, acknowledges
    the change set, and republishes the new base.
-6. Run `grok pull ...` again when the local workspace needs the new base or
+6. Run `h3-grok pull ...` again when the local workspace needs the new base or
    newly added scenes.
 
-`grok pull` refuses to overwrite unsubmitted local edits. `--force` is
+`h3-grok pull` refuses to overwrite unsubmitted local edits. `--force` is
 available for an intentional replacement.
 
 ## Remote authentication
@@ -93,8 +101,8 @@ For a reverse proxy that accepts a bearer token:
 
 ```bash
 export COMFYUI_API_TOKEN='...'
-grok pull https://comfy.example my_project
-grok send my_project
+h3-grok pull https://comfy.example my_project
+h3-grok send my_project
 ```
 
 The token is never written into the workspace state or workflow JSON.
@@ -125,4 +133,3 @@ context but are not imported from local files. This keeps an agent from
 accidentally restructuring a render plan while rewriting prose.
 
 License: GPL-3.0.
-

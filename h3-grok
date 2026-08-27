@@ -79,7 +79,7 @@ def safe_filename(value: str) -> str:
 def load_state(directory: Path) -> tuple[configparser.ConfigParser, dict[str, dict[str, str]]]:
     path = directory / STATE_FILE
     if not path.is_file():
-        raise CliError("%s is not a Grok Bridge workspace; run grok pull first." % directory)
+        raise CliError("%s is not a Grok Bridge workspace; run h3-grok pull first." % directory)
     config = configparser.ConfigParser(interpolation=None)
     config.optionxform = str
     config.read(path, encoding="utf-8")
@@ -134,7 +134,7 @@ def project_markdown(project: dict[str, Any]) -> str:
     lines = [
         "# %s" % project["project_id"], "",
         "This folder is a plain-text mirror of the live ComfyUI H3 prompt project.",
-        "Edit files under `scenes/`, then run `grok send` from this folder.",
+        "Edit files under `scenes/`, then run `h3-grok send` from this folder.",
         "ComfyUI applies staged edits only after **Grok Pull** is clicked.", "",
         "## Scenes", "",
         "| # | Scene ID | Prompt file | Settings |",
@@ -273,7 +273,7 @@ def send_command(args: argparse.Namespace) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        prog="grok",
+        prog="h3-grok",
         description="Mirror H3 ComfyUI scene prompts as plain Markdown files.",
     )
     subcommands = result.add_subparsers(dest="command", required=True)
@@ -302,7 +302,7 @@ def main() -> int:
         args.function(args)
         return 0
     except (CliError, OSError, KeyError) as exc:
-        print("grok: %s" % exc, file=sys.stderr)
+        print("h3-grok: %s" % exc, file=sys.stderr)
         return 2
 
 

@@ -65,7 +65,7 @@ async function publish(node, state, bridge) {
         const result = await request("publish", buildProjectPayload(node, state, bridge));
         setStatus(
             state,
-            `Grok project “${result.project_id}” sent · ${result.scene_count} scenes · run local grok pull`,
+            `Grok project “${result.project_id}” sent · ${result.scene_count} scenes · run local h3-grok pull`,
         );
     } catch (error) {
         setStatus(state, error?.message || String(error), true);
@@ -150,7 +150,7 @@ function ensureControls(node) {
     );
     const receive = makeButton(
         "Grok Pull",
-        "Import revision-matched scene edits staged by the local grok send command.",
+        "Import revision-matched scene edits staged by the local h3-grok send command.",
         () => void pull(node, editorState(node), upstreamBridge(node)),
     );
     toolbar.append(send, receive);
@@ -188,4 +188,3 @@ app.registerExtension({
         }
     },
 });
-
