@@ -122,7 +122,7 @@ my_project/
 ├── REFERENCES.md
 ├── .h3-grok-bridge.ini
 ├── assets/
-│   └── 001-hero-hero.png
+│   └── hero.png
 └── scenes/
     ├── 001-intro.md
     ├── 002-hallway.md
@@ -136,7 +136,8 @@ prompt JSON and no credentials.
 Picture references backed by ComfyUI `input`, `output`, or `temp` files are
 copied automatically, up to 100 MiB per image. Video, motion, and audio sources
 remain descriptive context only, avoiding unexpectedly large prompt-project
-downloads.
+downloads. Each image uses only its reference tag plus the original extension,
+so `@hero` becomes `assets/hero.png`.
 
 ## Scope
 

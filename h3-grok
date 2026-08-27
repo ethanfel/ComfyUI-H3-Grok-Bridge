@@ -251,6 +251,7 @@ def download_picture_assets(
         token: str = "") -> dict[int, str]:
     paths: dict[int, str] = {}
     downloaded: dict[tuple[str, str, str], str] = {}
+    claimed: dict[str, tuple[str, str, str]] = {}
     for index, reference in enumerate(project.get("references") or []):
         if reference.get("kind") != "picture" or not isinstance(reference.get("asset"), dict):
             continue
@@ -260,18 +261,43 @@ def download_picture_assets(
             str(asset.get("subfolder") or ""),
             str(asset.get("filename") or ""),
         )
-        if key in downloaded:
-            paths[index] = downloaded[key]
-            continue
-        token_name = (
+        source_name = Path(key[2].replace("\\", "/")).name
+        source_suffix = Path(source_name).suffix.lower()
+        suffix = source_suffix if re.fullmatch(r"\.[a-z0-9]{1,10}", source_suffix) else ""
+        old_token_name = (
             reference.get("tag") or reference.get("native_token")
             or reference.get("semantic_token") or "picture"
         )
-        source_name = safe_filename(Path(key[2].replace("\\", "/")).name)
-        relative = "assets/%03d-%s-%s" % (
-            index + 1, safe_filename(str(token_name)), source_name)
-        atomic_bytes(directory / relative, api_download(server, asset, token))
-        downloaded[key] = relative
+        tag = str(reference.get("tag") or "").strip().lstrip("@#")
+        if not tag:
+            native = str(reference.get("native_token") or "").strip()
+            semantic = str(reference.get("semantic_token") or "").strip()
+            if native.startswith("@"):
+                tag = native[1:]
+            elif semantic.startswith("#"):
+                tag = semantic[1:].split("[", 1)[0]
+            else:
+                tag = Path(source_name).stem or "picture"
+        relative = "assets/%s%s" % (safe_filename(tag), suffix)
+        owner = claimed.get(relative)
+        if owner is not None and owner != key:
+            raise CliError(
+                "Picture reference tags must be unique; more than one image maps to %s."
+                % relative)
+        claimed[relative] = key
+        existing = downloaded.get(key)
+        if existing is None:
+            atomic_bytes(directory / relative, api_download(server, asset, token))
+            downloaded[key] = relative
+        elif existing != relative:
+            atomic_bytes(directory / relative, (directory / existing).read_bytes())
+        old_relative = "assets/%03d-%s-%s" % (
+            index + 1, safe_filename(str(old_token_name)), safe_filename(source_name))
+        if old_relative != relative:
+            try:
+                (directory / old_relative).unlink()
+            except FileNotFoundError:
+                pass
         paths[index] = relative
     return paths
 

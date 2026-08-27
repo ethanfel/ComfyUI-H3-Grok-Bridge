@@ -19,7 +19,7 @@ def project():
             "metadata": {"length": 124},
         }],
         "references": [{
-            "kind": "picture", "native_token": "@hero",
+            "kind": "picture", "tag": "hero", "native_token": "@hero",
             "semantic_token": "#hero[0.00s]", "active_scenes": [1],
             "available_scenes": [1], "selector": "prompt tag",
             "asset": {
@@ -51,6 +51,8 @@ def test_workspace_state_and_markdown():
     assert "`scenes/001-opening.md`" in cli.project_markdown(data)
     with tempfile.TemporaryDirectory() as raw:
         directory = pathlib.Path(raw)
+        old_asset = directory / "assets/001-hero-hero.png"
+        cli.atomic_bytes(old_asset, b"old-copy")
         original_download = cli.api_download
         calls = []
         try:
@@ -63,10 +65,11 @@ def test_workspace_state_and_markdown():
             cli.api_download = original_download
         assert calls[0][1]["filename"] == "hero.png"
         assert (directory / assets[0]).read_bytes() == b"fake-png"
+        assert not old_asset.exists()
         references = cli.references_markdown(data, assets)
         assert "#hero[0.00s]" in references
         assert "Semantic Anchor Size: 512" in references
-        assert "](assets/001-hero-hero.png)" in references
+        assert "](assets/hero.png)" in references
 
 
 if __name__ == "__main__":
