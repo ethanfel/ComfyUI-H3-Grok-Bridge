@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-h3-grok-bridge"
-version = "0.3.0"
-description = "Revision-safe plain-text Grok workspace bridge for MiniMax H3 ComfyUI scene prompts."
+version = "0.3.2"
+description = "Edit MiniMax H3 scene prompts with Grok through plain Markdown files."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0"
@@ -19,7 +19,7 @@ Issues = "https://github.com/ethanfel/ComfyUI-H3-Grok-Bridge/issues"
 
 [tool.comfy]
 PublisherId = "ethanfel"
-DisplayName = "H3 Grok Prompt Bridge"
+DisplayName = "H3 Grok Bridge"
 
 [tool.setuptools]
 packages = []

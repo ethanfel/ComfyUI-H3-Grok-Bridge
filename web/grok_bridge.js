@@ -6,7 +6,7 @@ import {
     buildProjectPayload,
     nodeType,
     upstreamBridge,
-} from "./grok_bridge_core.mjs?v=0.3.1";
+} from "./grok_bridge_core.mjs?v=0.3.2";
 
 const PREFIX = "/minimax_h3_grok_bridge";
 
@@ -65,7 +65,7 @@ async function publish(node, state, bridge) {
         const result = await request("publish", buildProjectPayload(node, state, bridge));
         setStatus(
             state,
-            `Grok project “${result.project_id}” sent · ${result.scene_count} scenes · run local h3-grok pull`,
+            `Sent “${result.project_id}” · ${result.scene_count} scenes · now run h3-grok pull`,
         );
     } catch (error) {
         setStatus(state, error?.message || String(error), true);
@@ -102,7 +102,7 @@ async function pull(node, state, bridge) {
         const current = buildProjectPayload(node, state, bridge);
         const pending = await request("pull", current);
         if (!pending.pending || !pending.changes?.length) {
-            setStatus(state, "No local Grok scene edits are waiting.");
+            setStatus(state, "No Grok edits are waiting.");
             return;
         }
         const applied = applyPromptChanges(state.plan, pending.changes);
@@ -145,12 +145,12 @@ function ensureControls(node) {
     existing.forEach((control) => control.remove());
     const send = makeButton(
         "Grok Send",
-        "Publish the live Plan, one scene per local Markdown file, plus reference and semantic context.",
+        "Make the current scenes available to h3-grok pull.",
         () => void publish(node, editorState(node), upstreamBridge(node)),
     );
     const receive = makeButton(
         "Grok Pull",
-        "Import revision-matched scene edits staged by the local h3-grok send command.",
+        "Apply scene edits staged by h3-grok send.",
         () => void pull(node, editorState(node), upstreamBridge(node)),
     );
     toolbar.append(send, receive);

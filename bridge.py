@@ -21,7 +21,6 @@ except ImportError:  # Pure store tests do not need a running ComfyUI server.
     PromptServer = None
 
 
-PLAN_TYPE = "H3_CHAIN_PLAN"
 PROJECT_FORMAT = "h3_grok_bridge_project_v1"
 CHANGES_FORMAT = "h3_grok_bridge_changes_v1"
 MAX_SCENES = 128
@@ -300,23 +299,24 @@ class MiniMaxH3GrokBridge:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "plan": (PLAN_TYPE, {
-                    "tooltip": "Connect H3 Plan here and connect this output "
-                               "to an H3 Scene Prompt Editor."}),
+                "plan": ("H3_CHAIN_PLAN", {
+                    "display_name": "H3 Plan",
+                    "tooltip": "Connect the Plan you want Grok to edit."}),
                 "project_id": ("STRING", {
                     "default": "",
-                    "tooltip": "Local bridge name; blank uses Plan run_name."}),
+                    "display_name": "Project name (optional)",
+                    "placeholder": "uses Plan run name",
+                    "tooltip": "Leave blank to use the Plan run name."}),
             }
         }
 
-    RETURN_TYPES = (PLAN_TYPE,)
+    RETURN_TYPES = ("H3_CHAIN_PLAN",)
     RETURN_NAMES = ("plan",)
     FUNCTION = "passthrough"
     CATEGORY = "conditioning/minimax/contex_loop/authoring"
     DESCRIPTION = (
-        "Opt-in Grok file bridge. The connected H3 Prompt Editor publishes "
-        "plain-text scenes and imports explicitly staged edits; execution "
-        "passes the Plan through unchanged.")
+        "Edit H3 scene prompts with Grok. Connect this between the Plan and "
+        "Scene Prompt Editor.")
 
     def passthrough(self, plan, project_id=""):
         return (plan,)
@@ -324,7 +324,7 @@ class MiniMaxH3GrokBridge:
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3GrokBridge": MiniMaxH3GrokBridge}
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3GrokBridge": "MiniMax H3 Grok Prompt Bridge",
+    "MiniMaxH3GrokBridge": "H3 Grok Bridge",
 }
 
 
@@ -383,4 +383,3 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.post(PREFIX + "/changes")(_changes)
     PromptServer.instance.routes.post(PREFIX + "/pull")(_pull)
     PromptServer.instance.routes.post(PREFIX + "/ack")(_ack)
-
