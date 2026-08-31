@@ -15,8 +15,8 @@ That node pack is not modified or vendored.
   is connected through that bridge node;
 - exports every scene as a separate, header-free `scenes/*.md` prompt file;
 - exports `SHARED.md`, a readable `PROJECT.md`, and `REFERENCES.md` containing
-  native `@tag`, semantic `#tag[time]`, motion-role, subject, selector, source,
-  and active-scene context;
+  native `@tag`, semantic `#tag` / `#tag[time]`, motion-role, subject, selector,
+  source, and active-scene context;
 - downloads picture references from the Nightly H3 Project Asset Carousel or
   file-backed loader nodes into `assets/` and links them from `REFERENCES.md`;
 - stages local edits instead of silently changing the workflow;
@@ -156,7 +156,7 @@ remain supported. Downloads are limited to 100 MiB per image. Video, motion,
 audio, and Source Track media remain descriptive context only, avoiding
 unexpectedly large prompt-project downloads. Each image uses only its reference
 tag plus the original extension, so `@hero` becomes `assets/hero.png` and
-`#location[2.50s]` uses `assets/location.webp`.
+`#location` or `#location[2.50s]` uses `assets/location.webp`.
 
 ## Scope
 

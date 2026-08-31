@@ -70,12 +70,13 @@ const plan = {
     prompt_prefix:["Same performer."],
     shots:[
         {id:"intro", prompt:["Use @hero and @walk."], length:124},
-        {id:"outro", prompt:["Resolve at #location[2.50s]."]},
+        {id:"outro", prompt:["Resolve at #location and frame #hero[2.50s]."]},
     ],
 };
 const refs = collectProjectReferences(editor, plan);
 assert.equal(projectAssetReferenceRecords(assetManager, plan).length, 3);
-assert.equal(refs.find((item) => item.tag === "hero").semantic_token, "#hero[0.00s]");
+assert.equal(refs.find((item) => item.tag === "hero").semantic_token, "#hero");
+assert.deepEqual(refs.find((item) => item.tag === "hero").active_scenes, [1, 2]);
 assert.deepEqual(refs.find((item) => item.tag === "hero").asset, {
     provider:"h3_project_assets", project:"nightly", asset_id:"pa-hero",
     filename:"hero-source.png", mime_type:"image/png", sha256:"abc",

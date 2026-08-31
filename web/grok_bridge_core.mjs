@@ -218,7 +218,9 @@ function usedByPrompt(prompt, tag, semanticOnly = false) {
     const escaped = String(tag).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const native = new RegExp(`(^|[^A-Za-z0-9_])@${escaped}(?![A-Za-z0-9_-])`, "i");
     const semantic = new RegExp(
-        `(^|[^A-Za-z0-9_])#${escaped}\\[[0-9]+(?:\\.[0-9]+)?s?\\]`, "i",
+        `(^|[^A-Za-z0-9_])#${escaped}`
+        + `(?:\\[[0-9]+(?:\\.[0-9]+)?s?\\]|(?!\\[))(?![A-Za-z0-9_-])`,
+        "i",
     );
     return semanticOnly ? semantic.test(prompt) : native.test(prompt) || semantic.test(prompt);
 }
@@ -415,8 +417,7 @@ export function projectAssetReferenceRecords(manager, plan) {
             kind,
             tag,
             native_token:semanticOnly || sourceTrack ? null : `@${tag}`,
-            semantic_token:kind === "picture" && !sourceTrack
-                ? `#${tag}[0.00s]` : null,
+            semantic_token:kind === "picture" && !sourceTrack ? `#${tag}` : null,
             semantic_only:semanticOnly,
             selector:sourceTrack ? "project source track"
                 : semanticOnly ? "semantic prompt tag" : "prompt tag",
@@ -469,7 +470,7 @@ export function collectProjectReferences(editorNode, plan) {
             tag,
             native_token:descriptor.semanticOnly ? null : `@${tag}`,
             semantic_token:(descriptor.semantic || descriptor.semanticOnly)
-                ? `#${tag}[0.00s]` : null,
+                ? `#${tag}` : null,
             semantic_only:Boolean(descriptor.semanticOnly),
             selector,
             active_scenes:activeScenes,

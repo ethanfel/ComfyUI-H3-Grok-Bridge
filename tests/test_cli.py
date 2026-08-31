@@ -20,7 +20,7 @@ def project():
         }],
         "references": [{
             "kind": "picture", "tag": "hero", "native_token": "@hero",
-            "semantic_token": "#hero[0.00s]", "active_scenes": [1],
+            "semantic_token": "#hero", "active_scenes": [1],
             "available_scenes": [1], "selector": "prompt tag",
             "asset": {
                 "filename": "hero.png", "subfolder": "cast", "type": "input",
@@ -67,7 +67,7 @@ def test_workspace_state_and_markdown():
         assert (directory / assets[0]).read_bytes() == b"fake-png"
         assert not old_asset.exists()
         references = cli.references_markdown(data, assets)
-        assert "#hero[0.00s]" in references
+        assert "- Semantic token: #hero\n" in references
         assert "Semantic Anchor Size: 512" in references
         assert "](assets/hero.png)" in references
 

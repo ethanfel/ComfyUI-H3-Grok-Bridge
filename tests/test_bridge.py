@@ -36,7 +36,7 @@ def project(prompt="Opening."):
         ],
         "references": [{
             "kind": "picture", "tag": "hero", "native_token": "@hero",
-            "semantic_token": "#hero[0.00s]", "active_scenes": [1],
+            "semantic_token": "#hero", "active_scenes": [1],
             "asset": {"filename": "hero.png", "subfolder": "cast", "type": "input"},
         }],
     }
