@@ -85,6 +85,33 @@ For a specific request at launch:
 h3-grok edit my_project --prompt "Tighten scene 2 and sync it back."
 ```
 
+## Use with Codex
+
+The same skill and `h3-grok` transport work with Codex. Install the shared guide
+in [Codex's user skills directory](https://learn.chatgpt.com/docs/customization/overview#skills):
+
+```bash
+mkdir -p ~/.agents/skills/h3-grok-bridge
+cp ComfyUI-H3-Grok-Bridge/.grok/skills/h3-grok-bridge/SKILL.md \
+  ~/.agents/skills/h3-grok-bridge/SKILL.md
+```
+
+Use the path to your checkout in the copy command. Keep `h3-grok` available on
+PATH on the machine where Codex runs.
+
+Click **Edit with Grok** in ComfyUI to connect the editor, then close its command
+dialog. In your Codex session, ask:
+
+```text
+Use $h3-grok-bridge to tighten scene 2 in /path/to/my_project and sync it back.
+```
+
+Codex reads the context, edits the requested scene files, and runs
+`h3-grok sync --scene <scene-id>` directly. It does not need to launch Grok.
+For a new workspace, give Codex the ComfyUI URL and project ID so it can run
+`h3-grok pull <server> <project> [directory]` first. An existing workspace already
+stores those connection details. Keep the connected ComfyUI tab open.
+
 ## What Grok sees
 
 ```text
