@@ -513,15 +513,20 @@ export function applyPromptChanges(plan, changes) {
         String(shot?.id || `clip_${String(index + 1).padStart(4, "0")}`),
         shot,
     ]));
-    let applied = 0;
+    const updates = [];
+    const seen = new Set();
     for (const change of changes) {
-        const shot = byId.get(String(change?.scene_id ?? ""));
+        const id = String(change?.scene_id ?? "");
+        const shot = byId.get(id);
         if (!shot) throw new Error(`Scene ${change?.scene_id ?? "?"} no longer exists.`);
+        if (seen.has(id)) throw new Error(`Scene ${id} appears twice in the change set.`);
+        if (typeof change.prompt !== "string") throw new Error(`Scene ${id} needs prompt text.`);
+        seen.add(id);
         const prompt = String(change?.prompt ?? "").replace(/\r\n?/g, "\n");
         const current = promptText(shot.prompt);
         if (current === prompt) continue;
-        shot.prompt = prompt.split("\n");
-        applied += 1;
+        updates.push([shot, prompt.split("\n")]);
     }
-    return applied;
+    for (const [shot, prompt] of updates) shot.prompt = prompt;
+    return updates.length;
 }

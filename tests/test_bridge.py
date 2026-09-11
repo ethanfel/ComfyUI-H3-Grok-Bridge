@@ -107,7 +107,7 @@ def test_compact_user_facing_node_and_docs():
     assert len(node.DESCRIPTION) < 120
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    for user_action in ("Grok Send", "h3-grok pull", "h3-grok send", "Grok Pull"):
+    for user_action in ("Edit with Grok", "h3-grok edit", "h3-grok sync", "Grok Pull"):
         assert user_action in readme
     assert 'src="docs/node.svg"' in readme
     assert "Only scene prompts can be sent back." in readme

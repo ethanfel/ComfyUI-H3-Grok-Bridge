@@ -7,10 +7,14 @@ import argparse
 import configparser
 import hashlib
 import json
+import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -145,8 +149,16 @@ def safe_filename(value: str) -> str:
     return (name or "scene")[:80]
 
 
+def workspace_path(directory: Path, relative: str) -> Path:
+    root = directory.resolve()
+    path = (root / relative).resolve()
+    if Path(relative).is_absolute() or not path.is_relative_to(root) or path == root:
+        raise CliError("Workspace state contains an unsafe path: %s" % relative)
+    return path
+
+
 def load_state(directory: Path) -> tuple[configparser.ConfigParser, dict[str, dict[str, str]]]:
-    path = directory / STATE_FILE
+    path = workspace_path(directory, STATE_FILE)
     if not path.is_file():
         raise CliError("%s is not a Grok Bridge workspace; run h3-grok pull first." % directory)
     config = configparser.ConfigParser(interpolation=None)
@@ -163,6 +175,14 @@ def load_state(directory: Path) -> tuple[configparser.ConfigParser, dict[str, di
             "path": fields[0], "hash": fields[1], "index": fields[2],
         }
     return config, scenes
+
+
+def find_workspace(value: str = ".") -> Path:
+    directory = Path(value).expanduser().resolve()
+    for candidate in (directory, *directory.parents):
+        if (candidate / STATE_FILE).is_file():
+            return candidate
+    raise CliError("No Grok Bridge workspace here. Click Edit with Grok in ComfyUI first.")
 
 
 def save_state(directory: Path, server: str, project: dict[str, Any]) -> None:
@@ -184,7 +204,7 @@ def save_state(directory: Path, server: str, project: dict[str, Any]) -> None:
     from io import StringIO
     output = StringIO()
     config.write(output)
-    atomic_text(directory / STATE_FILE, output.getvalue())
+    atomic_text(workspace_path(directory, STATE_FILE), output.getvalue())
 
 
 def human_value(value: Any) -> str:
@@ -203,8 +223,8 @@ def project_markdown(project: dict[str, Any]) -> str:
     lines = [
         "# %s" % project["project_id"], "",
         "This folder is a plain-text mirror of the live ComfyUI H3 prompt project.",
-        "Edit files under `scenes/`, then run `h3-grok send` from this folder.",
-        "ComfyUI applies staged edits only after **Grok Pull** is clicked.", "",
+        "Edit files under `scenes/`, then run `h3-grok sync` to apply them in ComfyUI.",
+        "Keep the connected ComfyUI editor open. Sync confirms when the edits are applied.", "",
         "## Scenes", "",
         "| # | Scene ID | Prompt file | Settings |",
         "|---:|---|---|---|",
@@ -309,15 +329,16 @@ def download_picture_assets(
         claimed[relative] = key
         existing = downloaded.get(key)
         if existing is None:
-            atomic_bytes(directory / relative, api_download(server, asset, token))
+            destination = workspace_path(directory, relative)
+            atomic_bytes(destination, api_download(server, asset, token))
             downloaded[key] = relative
         elif existing != relative:
-            atomic_bytes(directory / relative, (directory / existing).read_bytes())
+            atomic_bytes(workspace_path(directory, relative), workspace_path(directory, existing).read_bytes())
         old_relative = "assets/%03d-%s-%s" % (
             index + 1, safe_filename(str(old_token_name)), safe_filename(source_name))
         if old_relative != relative:
             try:
-                (directory / old_relative).unlink()
+                workspace_path(directory, old_relative).unlink()
             except FileNotFoundError:
                 pass
         paths[index] = relative
@@ -326,52 +347,108 @@ def download_picture_assets(
 
 def guard_local_edits(directory: Path, old_scenes: dict[str, dict[str, str]],
                       project: dict[str, Any], force: bool) -> None:
-    if force:
-        return
     remote = {scene["id"]: scene for scene in project["scenes"]}
     conflicts = []
+    tracked = {}
     for scene_id, record in old_scenes.items():
-        path = (directory / record["path"]).resolve()
-        try:
-            inside = os.path.commonpath((directory.resolve(), path)) == str(directory.resolve())
-        except ValueError:
-            inside = False
-        if not inside:
-            raise CliError("Workspace state contains an unsafe scene path.")
+        path = workspace_path(directory, record["path"])
+        tracked[path] = record
         if not path.is_file():
             continue
         local_hash = text_hash(path.read_text(encoding="utf-8"))
         remote_hash = remote.get(scene_id, {}).get("prompt_hash")
         if local_hash not in (record["hash"], remote_hash):
             conflicts.append(record["path"])
-    if conflicts:
+    for scene in project["scenes"]:
+        relative = "scenes/%03d-%s.md" % (int(scene["index"]), safe_filename(scene["id"]))
+        path = workspace_path(directory, relative)
+        if path.is_file() and path not in tracked:
+            if text_hash(path.read_text(encoding="utf-8")) != scene["prompt_hash"]:
+                conflicts.append(relative)
+    if conflicts and not force:
         raise CliError(
             "Local edits would be overwritten: %s. Send them first or use --force."
             % ", ".join(conflicts))
 
 
 def pull_command(args: argparse.Namespace) -> None:
-    server = args.server.rstrip("/")
-    query = urllib.parse.urlencode({"project_id": args.project})
+    server, project_id, directory = workspace_target(args)
+    query = urllib.parse.urlencode({"project_id": project_id})
     project = api_request(server, "/project?" + query, args.token)
-    directory = Path(args.directory or args.project).expanduser().resolve()
     old_scenes = {}
     if (directory / STATE_FILE).is_file():
-        _old_config, old_scenes = load_state(directory)
+        old_config, old_scenes = load_state(directory)
+        if (old_config["bridge"]["server"].rstrip("/") != server
+                or old_config["bridge"]["project"] != project_id):
+            raise CliError("This folder belongs to a different project or server. Use another folder.")
     guard_local_edits(directory, old_scenes, project, args.force)
     directory.mkdir(parents=True, exist_ok=True)
     asset_paths = download_picture_assets(directory, project, server, args.token)
-    atomic_text(directory / "PROJECT.md", project_markdown(project))
-    atomic_text(directory / "SHARED.md", str(project.get("shared_prompt") or ""))
-    atomic_text(directory / "REFERENCES.md", references_markdown(project, asset_paths))
+    atomic_text(workspace_path(directory, "PROJECT.md"), project_markdown(project))
+    atomic_text(workspace_path(directory, "SHARED.md"), str(project.get("shared_prompt") or ""))
+    atomic_text(workspace_path(directory, "REFERENCES.md"), references_markdown(project, asset_paths))
     for scene in project["scenes"]:
         relative = "scenes/%03d-%s.md" % (
             int(scene["index"]), safe_filename(scene["id"]))
-        atomic_text(directory / relative, scene["prompt"])
+        atomic_text(workspace_path(directory, relative), scene["prompt"])
     save_state(directory, server, project)
     print("Pulled %d scenes and %d image asset%s to %s" % (
         len(project["scenes"]), len(set(asset_paths.values())),
-        "" if len(set(asset_paths.values())) == 1 else "s", directory))
+           "" if len(set(asset_paths.values())) == 1 else "s", directory))
+
+
+def workspace_target(args: argparse.Namespace) -> tuple[str, str, Path]:
+    if args.project:
+        if not args.server or urllib.parse.urlsplit(args.server).scheme not in {"http", "https"}:
+            raise CliError("Use h3-grok edit <ComfyUI URL> <project>, or h3-grok edit <folder>.")
+        return (args.server.rstrip("/"), args.project,
+                Path(args.directory or args.project).expanduser().resolve())
+    directory = find_workspace(args.directory or args.server or ".")
+    config, _scenes = load_state(directory)
+    return config["bridge"]["server"].rstrip("/"), config["bridge"]["project"], directory
+
+
+def edit_command(args: argparse.Namespace) -> None:
+    executable = shutil.which("grok")
+    if not executable:
+        raise CliError("The grok command is not installed on this machine.")
+    _server, _project_id, directory = workspace_target(args)
+    dirty = False
+    if (directory / STATE_FILE).is_file():
+        config, scenes = load_state(directory)
+        if config["bridge"]["server"].rstrip("/") != _server or config["bridge"]["project"] != _project_id:
+            raise CliError("This folder belongs to a different project or server. Use another folder.")
+        for record in scenes.values():
+            path = workspace_path(directory, record["path"])
+            if not path.is_file():
+                raise CliError("Missing scene file %s. Restore it or run h3-grok pull." % record["path"])
+            dirty |= text_hash(path.read_text(encoding="utf-8")) != record["hash"]
+    if dirty:
+        print("Opening your existing local edits. They have not been overwritten.", flush=True)
+    else:
+        pull_command(args)
+    skill_source = Path(__file__).resolve().parent / ".grok/skills/h3-grok-bridge/SKILL.md"
+    if skill_source.is_file():
+        skill_target = workspace_path(directory, ".grok/skills/h3-grok-bridge/SKILL.md")
+        if not skill_target.exists():
+            atomic_text(skill_target, skill_source.read_text(encoding="utf-8"))
+    instructions = (
+        "This is an H3 Grok Bridge prompt workspace. Read PROJECT.md, SHARED.md, "
+        "and REFERENCES.md, and inspect relevant images in assets/. Edit requested "
+        "scene files under scenes/ as plain prompt text, preserving scene IDs and "
+        "reference tags. After each completed requested edit, run h3-grok sync "
+        "from this folder to apply it in the connected ComfyUI editor. Only report "
+        "success when sync confirms application. Keep conflicts as local drafts; "
+        "do not use --force or cancel pending edits without the user's instruction. "
+    )
+    instructions += args.prompt or "Read the context, then ask what the user would like to change."
+    environment = os.environ.copy()
+    if args.token:
+        environment["COMFYUI_API_TOKEN"] = args.token
+    result = subprocess.run([executable, instructions], cwd=directory, env=environment, check=False)
+    if result.returncode:
+        raise CliError("Grok exited with status %d. Your scene files are still in %s."
+                       % (result.returncode, directory))
 
 
 def selected_scene(scene_id: str, record: dict[str, str], requested: list[str]) -> bool:
@@ -381,14 +458,17 @@ def selected_scene(scene_id: str, record: dict[str, str], requested: list[str]) 
     return any(value in choices for value in requested)
 
 
-def send_command(args: argparse.Namespace) -> None:
-    directory = Path(args.directory).expanduser().resolve()
+def local_changes(args: argparse.Namespace):
+    directory = find_workspace(args.directory)
     config, scenes = load_state(directory)
+    for requested in args.scene:
+        if not any(selected_scene(scene_id, record, [requested]) for scene_id, record in scenes.items()):
+            raise CliError("No scene matches %s." % requested)
     changes = []
     for scene_id, record in scenes.items():
         if not selected_scene(scene_id, record, args.scene):
             continue
-        path = (directory / record["path"]).resolve()
+        path = workspace_path(directory, record["path"])
         if not path.is_file():
             raise CliError("Missing scene file %s." % record["path"])
         prompt = path.read_text(encoding="utf-8")
@@ -399,6 +479,11 @@ def send_command(args: argparse.Namespace) -> None:
             "base_prompt_hash": record["hash"],
             "prompt": prompt,
         })
+    return directory, config, changes
+
+
+def send_command(args: argparse.Namespace) -> None:
+    directory, config, changes = local_changes(args)
     if not changes:
         print("No changed scene prompts to send.")
         return
@@ -410,10 +495,60 @@ def send_command(args: argparse.Namespace) -> None:
             "changes": changes,
         },
     )
+    if result.get("applied"):
+        save_state(directory, config["bridge"]["server"], result["project"])
+        print("These scene edits were already applied in ComfyUI. Local baseline refreshed.")
+        return
     print(
         "Staged %d scene edit%s as %s. Click Grok Pull in ComfyUI."
         % (len(result["changes"]), "" if len(result["changes"]) == 1 else "s",
            result["change_id"][:12]))
+
+
+def sync_command(args: argparse.Namespace) -> None:
+    if not math.isfinite(args.timeout) or args.timeout < 0:
+        raise CliError("Sync timeout must be a finite, non-negative number of seconds.")
+    directory, config, changes = local_changes(args)
+    if not changes:
+        print("No changed scene prompts to sync.")
+        return
+    server, project_id = config["bridge"]["server"], config["bridge"]["project"]
+    result = api_request(server, "/changes", args.token, {
+        "project_id": project_id, "base_revision": config["bridge"]["revision"],
+        "changes": changes, "auto_apply": True,
+    })
+    change_id = result["change_id"]
+    deadline = time.monotonic() + args.timeout
+    while not result.get("applied"):
+        query = urllib.parse.urlencode({"project_id": project_id, "change_id": change_id})
+        result = api_request(server, "/status?" + query, args.token)
+        if result.get("applied"):
+            break
+        if result.get("change_id") != change_id:
+            raise CliError("The pending edit was cancelled or replaced. Your local files were kept.")
+        if result.get("error"):
+            raise CliError("ComfyUI kept its current Plan: %s Your local files were kept."
+                           % result["error"])
+        if time.monotonic() >= deadline:
+            raise CliError("Edits are waiting for ComfyUI. Keep the connected editor open, "
+                           "then run h3-grok sync again or click Grok Pull. Local files were kept.")
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+    project = result["project"]
+    if project["project_id"] != project_id:
+        raise CliError("ComfyUI confirmed a different project; local state was not changed.")
+    # Update only the baseline. Edits made locally while waiting remain unsent changes.
+    save_state(directory, server, project)
+    print("Applied %d scene edit%s in ComfyUI. Ready for the next edit."
+          % (len(changes), "" if len(changes) == 1 else "s"))
+
+
+def cancel_command(args: argparse.Namespace) -> None:
+    directory = find_workspace(args.directory)
+    config, _scenes = load_state(directory)
+    result = api_request(config["bridge"]["server"], "/cancel", args.token,
+                         {"project_id": config["bridge"]["project"]})
+    print("Pending edits cancelled. Local scene files were kept." if result["cancelled"]
+          else "No pending edits to cancel.")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -423,8 +558,8 @@ def parser() -> argparse.ArgumentParser:
     )
     subcommands = result.add_subparsers(dest="command", required=True)
     pull = subcommands.add_parser("pull", help="Pull a published ComfyUI project.")
-    pull.add_argument("server", help="ComfyUI base URL, for example http://host:8188")
-    pull.add_argument("project", help="Bridge project id shown in the Prompt Editor")
+    pull.add_argument("server", nargs="?", help="ComfyUI URL or existing workspace folder")
+    pull.add_argument("project", nargs="?", help="Bridge project id; omitted in an existing workspace")
     pull.add_argument("directory", nargs="?", help="Destination; defaults to project id")
     pull.add_argument("--force", action="store_true", help="Overwrite conflicting local edits")
     pull.add_argument("--token", default=os.environ.get("COMFYUI_API_TOKEN", ""),
@@ -438,6 +573,26 @@ def parser() -> argparse.ArgumentParser:
     send.add_argument("--token", default=os.environ.get("COMFYUI_API_TOKEN", ""),
                       help="Bearer token; prefer COMFYUI_API_TOKEN")
     send.set_defaults(function=send_command)
+
+    edit = subcommands.add_parser("edit", help="Prepare a workspace and open it in Grok.")
+    edit.add_argument("server", nargs="?", help="ComfyUI URL or existing workspace folder")
+    edit.add_argument("project", nargs="?", help="Project id when using a URL")
+    edit.add_argument("directory", nargs="?", help="Destination; defaults to project id")
+    edit.add_argument("--prompt", help="Initial editing request for Grok")
+    edit.add_argument("--token", default=os.environ.get("COMFYUI_API_TOKEN", ""))
+    edit.set_defaults(function=edit_command, force=False)
+
+    sync = subcommands.add_parser("sync", help="Apply local scene edits in the open ComfyUI editor.")
+    sync.add_argument("directory", nargs="?", default=".", help="Workspace folder")
+    sync.add_argument("--scene", action="append", default=[])
+    sync.add_argument("--timeout", type=float, default=30, help="Seconds to wait for ComfyUI (default 30)")
+    sync.add_argument("--token", default=os.environ.get("COMFYUI_API_TOKEN", ""))
+    sync.set_defaults(function=sync_command)
+
+    cancel = subcommands.add_parser("cancel", help="Discard pending remote edits; keep local scene files.")
+    cancel.add_argument("directory", nargs="?", default=".")
+    cancel.add_argument("--token", default=os.environ.get("COMFYUI_API_TOKEN", ""))
+    cancel.set_defaults(function=cancel_command)
     return result
 
 
@@ -446,7 +601,7 @@ def main() -> int:
         args = parser().parse_args()
         args.function(args)
         return 0
-    except (CliError, OSError, KeyError) as exc:
+    except (CliError, OSError, KeyError, configparser.Error, json.JSONDecodeError) as exc:
         print("h3-grok: %s" % exc, file=sys.stderr)
         return 2
 

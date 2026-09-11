@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import {
     applyPromptChanges,
     buildProjectPayload,
@@ -100,17 +99,15 @@ assert.equal(payload.references.length, 4);
 assert.equal(applyPromptChanges(plan, [{scene_id:"intro", prompt:"Changed."}]), 1);
 assert.deepEqual(plan.shots[0].prompt, ["Changed."]);
 
-const frontend = fs.readFileSync(new URL("../web/grok_bridge.js", import.meta.url), "utf8");
-assert.match(frontend, /Grok Send/);
-assert.match(frontend, /Grok Pull/);
-assert.match(frontend, /Make the current scenes available to h3-grok pull\./);
-assert.match(frontend, /Apply scene edits staged by h3-grok send\./);
-assert.match(frontend, /No Grok edits are waiting\./);
-assert.match(frontend, /upstreamBridge\(node\)/);
-assert.match(frontend, /_h3ScenePromptEditorState/);
-assert.match(frontend, /_h3RichPromptState/);
-assert.match(frontend, /state\.planWidget\.value = value/);
-assert.match(frontend, /await request\("ack"/);
+const atomicPlan = {shots:[{id:"intro", prompt:["Keep this"]}]};
+assert.throws(() => applyPromptChanges(atomicPlan, [
+    {scene_id:"intro", prompt:"Uncommitted"}, {scene_id:"missing", prompt:"Invalid"},
+]));
+assert.deepEqual(atomicPlan.shots[0].prompt, ["Keep this"]);
+assert.throws(() => applyPromptChanges(atomicPlan, [
+    {scene_id:"intro", prompt:"One"}, {scene_id:"intro", prompt:"Two"},
+]));
+assert.deepEqual(atomicPlan.shots[0].prompt, ["Keep this"]);
 
 const bridgeThroughSet = node(20, "MiniMaxH3GrokBridge");
 const setter = node(21, "SetNode", [["name", "scene-plan"]]);

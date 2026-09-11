@@ -182,6 +182,10 @@ class BridgeStore:
         document = normalize_project(payload)
         directory, snapshot_path, pending_path = self._paths(document["project_id"])
         with self._lock(document["project_id"]):
+            previous = _read_json(snapshot_path) if os.path.isfile(snapshot_path) else {}
+            if previous.get("last_sync"):
+                document["last_sync"] = previous["last_sync"]
+            document["editor_id"] = str(payload.get("editor_id") or "")[:200]
             document["published_at"] = datetime.now(timezone.utc).isoformat()
             _atomic_json(snapshot_path, document)
             pending = os.path.isfile(pending_path)
@@ -210,6 +214,8 @@ class BridgeStore:
     def stage(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("Changes payload must be an object.")
+        if len(_canonical(payload)) > MAX_PAYLOAD_CHARS:
+            raise ValueError("Changes payload is too large.")
         project = project_id(payload.get("project_id"))
         _directory, snapshot_path, pending_path = self._paths(project)
         with self._lock(project):
@@ -217,12 +223,29 @@ class BridgeStore:
                 raise BridgeNotFound("Publish the project from ComfyUI before sending edits.")
             snapshot = _read_json(snapshot_path)
             base = str(payload.get("base_revision") or "")
+            request_hash = _digest({
+                "base_revision": base, "changes": payload.get("changes"),
+            })
+            receipt = snapshot.get("last_sync") or {}
+            if receipt.get("request_hash") == request_hash:
+                return {"applied": True, "pending": False, **receipt}
+            if os.path.isfile(pending_path):
+                pending = _read_json(pending_path)
+                if pending.get("change_id") == receipt.get("change_id"):
+                    os.unlink(pending_path)
+                elif pending.get("request_hash") == request_hash:
+                    if payload.get("auto_apply"):
+                        pending["auto_apply"] = True
+                    pending.pop("error", None)
+                    _atomic_json(pending_path, pending)
+                    return pending
+                else:
+                    raise BridgeConflict(
+                        "Another edit is waiting. Apply it in ComfyUI or run "
+                        "h3-grok cancel before sending a replacement.")
             if base != snapshot.get("revision"):
                 raise BridgeConflict(
                     "ComfyUI changed after the local pull. Pull again before sending.")
-            if os.path.isfile(pending_path):
-                raise BridgeConflict(
-                    "A change set is already waiting. Pull it in ComfyUI first.")
             raw_changes = payload.get("changes")
             if not isinstance(raw_changes, list) or not raw_changes:
                 raise ValueError("Send needs at least one changed scene.")
@@ -260,6 +283,11 @@ class BridgeStore:
                 "base_revision": base,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "changes": changes,
+                "request_hash": request_hash,
+                "auto_apply": payload.get("auto_apply") is True,
+                "base_project": normalize_project({
+                    key: snapshot[key] for key in ("project_id", "shared_prompt", "scenes", "references")
+                }),
             }
             _atomic_json(pending_path, pending)
             return pending
@@ -267,7 +295,7 @@ class BridgeStore:
     def pull(self, payload: Any) -> dict[str, Any]:
         current = normalize_project(payload)
         project = current["project_id"]
-        _directory, _snapshot_path, pending_path = self._paths(project)
+        _directory, snapshot_path, pending_path = self._paths(project)
         with self._lock(project):
             if not os.path.isfile(pending_path):
                 return {
@@ -276,22 +304,117 @@ class BridgeStore:
                 }
             pending = _read_json(pending_path)
             if pending.get("base_revision") != current["revision"]:
-                raise BridgeConflict(
-                    "The live Plan changed after Grok pulled it. Publish and "
-                    "pull a fresh local copy before importing.")
+                snapshot = _read_json(snapshot_path)
+                receipt = snapshot.get("last_sync") or {}
+                already_applied = (
+                    receipt.get("change_id") == pending.get("change_id")
+                    and receipt.get("project", {}).get("revision") == current["revision"]
+                ) or self._matches_applied(snapshot, pending, current)
+                if not already_applied:
+                    raise BridgeConflict(
+                        "The live Plan changed after Grok pulled it. Keep your local edits, "
+                        "run h3-grok cancel, then reconcile with a fresh pull.")
+                return {"ok": True, "pending": True, **pending, "already_applied": True}
             return {"ok": True, "pending": True, **pending}
 
-    def acknowledge(self, value: Any, change_id: Any) -> dict[str, Any]:
+    @staticmethod
+    def _matches_applied(snapshot, pending, current) -> bool:
+        """Only scene prompt text and derived reference usage may change."""
+        snapshot = pending.get("base_project", snapshot)
+        if snapshot.get("revision") != pending.get("base_revision"):
+            return False
+        changes = {item["scene_id"]: item["prompt"] for item in pending["changes"]}
+        expected = normalize_project({
+            "project_id": snapshot["project_id"],
+            "shared_prompt": snapshot["shared_prompt"],
+            "references": snapshot["references"],
+            "scenes": [
+                {**scene, "prompt": changes.get(scene["id"], scene["prompt"])}
+                for scene in snapshot["scenes"]
+            ],
+        })
+        def comparable(document):
+            return {
+                key: ([{k: v for k, v in ref.items() if k != "active_scenes"}
+                       if isinstance(ref, dict) else ref for ref in value]
+                      if key == "references" else value)
+                for key, value in document.items() if key != "revision"
+            }
+        return comparable(expected) == comparable(current)
+
+    def status(self, value: Any, change_id: str = "") -> dict[str, Any]:
+        project = project_id(value)
+        _directory, snapshot_path, pending_path = self._paths(project)
+        with self._lock(project):
+            if not os.path.isfile(snapshot_path):
+                raise BridgeNotFound("Click Edit with Grok in the connected editor first.")
+            snapshot = _read_json(snapshot_path)
+            receipt = snapshot.get("last_sync") or {}
+            if change_id and receipt.get("change_id") == change_id:
+                return {"ok": True, "applied": True, "pending": False, **receipt}
+            pending = _read_json(pending_path) if os.path.isfile(pending_path) else {}
+            if pending.get("change_id") == receipt.get("change_id"):
+                pending = {}
+            return {
+                "ok": True, "applied": False, "pending": bool(pending),
+                "editor_id": snapshot.get("editor_id", ""),
+                "change_id": pending.get("change_id"),
+                "auto_apply": pending.get("auto_apply", False),
+                "error": pending.get("error", ""),
+            }
+
+    def cancel(self, value: Any) -> dict[str, Any]:
         project = project_id(value)
         _directory, _snapshot_path, pending_path = self._paths(project)
         with self._lock(project):
+            cancelled = os.path.isfile(pending_path)
+            if cancelled:
+                os.unlink(pending_path)
+            return {"ok": True, "cancelled": cancelled}
+
+    def failed(self, value: Any, change_id: Any, message: Any) -> dict[str, Any]:
+        project = project_id(value)
+        _directory, _snapshot_path, pending_path = self._paths(project)
+        with self._lock(project):
+            if os.path.isfile(pending_path):
+                pending = _read_json(pending_path)
+                if pending.get("change_id") == change_id:
+                    pending["error"] = str(message)[:2000]
+                    _atomic_json(pending_path, pending)
+            return {"ok": True}
+
+    def acknowledge(self, value: Any, change_id: Any, current: Any = None) -> dict[str, Any]:
+        project = project_id(value)
+        _directory, snapshot_path, pending_path = self._paths(project)
+        with self._lock(project):
+            snapshot = _read_json(snapshot_path) if os.path.isfile(snapshot_path) else {}
+            receipt = snapshot.get("last_sync") or {}
+            if change_id and receipt.get("change_id") == change_id:
+                return {"ok": True, "acknowledged": True, "applied": True, **receipt}
             if not os.path.isfile(pending_path):
                 return {"ok": True, "project_id": project, "acknowledged": False}
             pending = _read_json(pending_path)
             if str(change_id or "") != str(pending.get("change_id") or ""):
                 raise BridgeConflict("Pending change id no longer matches.")
+            if current is not None:
+                document = normalize_project(current)
+                if not self._matches_applied(snapshot, pending, document):
+                    raise BridgeConflict("The applied Plan does not match the staged scene edits.")
+                receipt = {
+                    "change_id": pending["change_id"],
+                    "request_hash": pending.get("request_hash"),
+                    "project": document,
+                }
+                # Commit the receipt with the snapshot before removing pending.
+                # A lost HTTP reply or crash can then be retried without reapplying.
+                _atomic_json(snapshot_path, {
+                    **document, "last_sync": receipt,
+                    "editor_id": snapshot.get("editor_id", ""),
+                    "published_at": datetime.now(timezone.utc).isoformat(),
+                })
             os.unlink(pending_path)
-            return {"ok": True, "project_id": project, "acknowledged": True}
+            return {"ok": True, "project_id": project, "acknowledged": True,
+                    "applied": current is not None, **receipt}
 
 
 class MiniMaxH3GrokBridge:
@@ -370,8 +493,34 @@ async def _ack(request):
     try:
         body = await request.json()
         return web.json_response(_store().acknowledge(
-            body.get("project_id"), body.get("change_id")))
-    except (ValueError, OSError, TypeError, json.JSONDecodeError) as exc:
+            body.get("project_id"), body.get("change_id"), body.get("current")))
+    except (ValueError, OSError, TypeError, AttributeError) as exc:
+        return _error(exc)
+
+
+async def _status(request):
+    try:
+        return web.json_response(_store().status(
+            request.rel_url.query.get("project_id"),
+            request.rel_url.query.get("change_id", "")))
+    except (ValueError, OSError, TypeError) as exc:
+        return _error(exc)
+
+
+async def _cancel(request):
+    try:
+        body = await request.json()
+        return web.json_response(_store().cancel(body.get("project_id")))
+    except (ValueError, OSError, TypeError, AttributeError) as exc:
+        return _error(exc)
+
+
+async def _failed(request):
+    try:
+        body = await request.json()
+        return web.json_response(_store().failed(
+            body.get("project_id"), body.get("change_id"), body.get("error")))
+    except (ValueError, OSError, TypeError, AttributeError) as exc:
         return _error(exc)
 
 
@@ -383,3 +532,6 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.post(PREFIX + "/changes")(_changes)
     PromptServer.instance.routes.post(PREFIX + "/pull")(_pull)
     PromptServer.instance.routes.post(PREFIX + "/ack")(_ack)
+    PromptServer.instance.routes.get(PREFIX + "/status")(_status)
+    PromptServer.instance.routes.post(PREFIX + "/cancel")(_cancel)
+    PromptServer.instance.routes.post(PREFIX + "/failed")(_failed)

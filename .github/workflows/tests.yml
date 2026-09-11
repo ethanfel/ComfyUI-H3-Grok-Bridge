@@ -18,4 +18,6 @@ jobs:
       - run: python tests/test_bridge.py
       - run: python tests/test_cli.py
       - run: node tests/test_core.mjs
+      - run: node tests/test_frontend.mjs
+      - run: python tests/test_sync.py
       - run: python h3-grok --help

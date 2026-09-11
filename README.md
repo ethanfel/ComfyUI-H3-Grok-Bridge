@@ -4,22 +4,25 @@
   <img src="docs/node.svg" width="420" alt="H3 Grok Bridge node">
 </p>
 
-Edit MiniMax H3 scene prompts with Grok as ordinary Markdown files. Only scene
-text comes back into ComfyUI; your Plan structure and generation settings stay
-under your control.
+Edit MiniMax H3 scene prompts with terminal Grok as ordinary Markdown files.
+Grok sends finished edits straight back to the open ComfyUI editor with
+`h3-grok sync`. Only scene text comes back; Plan structure and generation
+settings stay under your control.
 
 ## How it works
 
 ```text
 H3 Plan → H3 Grok Bridge → H3 Scene Prompt Editor
                                   │
-                    Grok Send / Grok Pull
+                       Edit with Grok
                                   │
-                         local Markdown files
+                    local Markdown files ↔ Grok
+                                  │
+                             h3-grok sync
 ```
 
-The bridge node stays small. The two working buttons appear in the connected
-**H3 Scene Prompt Editor**.
+**Edit with Grok** is available on both the bridge node and the connected
+**H3 Scene Prompt Editor**. The editor also keeps **Grok Pull** for manual imports.
 
 ## Install
 
@@ -32,37 +35,55 @@ ln -s "$PWD/ComfyUI-H3-Grok-Bridge/h3-grok" ~/.local/bin/h3-grok
 Restart ComfyUI. Add **H3 Grok Bridge** between the Plan and Scene Prompt
 Editor. Leave **Project name** blank to use the Plan run name.
 
-### Let Grok learn the commands
-
-```bash
-mkdir -p ~/.grok/skills/h3-grok-bridge
-cp ComfyUI-H3-Grok-Bridge/.grok/skills/h3-grok-bridge/SKILL.md \
-  ~/.grok/skills/h3-grok-bridge/SKILL.md
-```
+Install the `grok` terminal command on the machine where you edit prompts.
+`h3-grok edit` supplies the editing instructions and adds the bundled Grok skill
+to new workspaces automatically. An existing workspace skill is preserved.
 
 ## Use it
 
-1. In the Prompt Editor, click **Grok Send**.
-2. Pull the project on the machine where Grok runs:
+1. Click **Edit with Grok** on the bridge or Prompt Editor.
+2. Copy its launch command and run it in a terminal:
 
    ```bash
-   h3-grok pull http://127.0.0.1:8188 my_project
-   cd my_project
-   grok
+   h3-grok edit http://127.0.0.1:8188 my_project
    ```
 
-3. Ask Grok to edit the scenes. If the skill is installed, `/h3-grok-bridge`
-   teaches it to read the project, references, and images.
-4. When the edits are ready:
+   This downloads the project and its reference images, opens Grok in the right
+   folder, and tells it how to edit and sync the scenes.
+
+3. Ask Grok for a change, such as “Tighten scene 2 and send it back.” Grok edits
+   the scene files and runs:
 
    ```bash
-   h3-grok send .
+   h3-grok sync
    ```
 
-5. Return to ComfyUI and click **Grok Pull**.
+   The connected editor applies the edits. Sync confirms receipt and refreshes
+   the local baseline, ready for your next request. You can also run this
+   command yourself from the workspace or pass its folder as an argument.
 
-`h3-grok send` stages changes; it does not modify the live Plan. **Grok Pull**
-is the explicit approval step.
+Keep the connected ComfyUI tab open. Further edits in the same session need only
+`h3-grok sync`; the editor also publishes subsequent live Plan changes while
+connected. Changes are sent when sync runs, so Grok can save intermediate local
+drafts without applying them. Sync updates the open Plan; save your ComfyUI
+workflow to keep it across sessions. Sync does not start a render.
+
+To reopen an existing workspace:
+
+```bash
+h3-grok edit my_project
+```
+
+It remembers the server and project. Existing local drafts are opened without
+being overwritten. After refreshing or reopening the ComfyUI tab, click
+**Edit with Grok** once to reconnect it; you can close the command dialog if
+Grok is already running.
+
+For a specific request at launch:
+
+```bash
+h3-grok edit my_project --prompt "Tighten scene 2 and sync it back."
+```
 
 ## What Grok sees
 
@@ -87,20 +108,41 @@ Carousel images use their tag as the filename: `@hero` becomes
 ## Safety
 
 - Pull refuses to overwrite unsent local scene edits.
+- A first pull also protects existing scene files in the destination folder.
 - Pulling again updates imported assets atomically.
 - Only scene prompts can be sent back.
 - Timing, seeds, policies, assets, and Plan structure remain unchanged.
+- Concurrent Plan edits cause a conflict; they are not silently replaced.
+- Repeating sync after a timeout or lost reply does not apply an edit twice.
 - `--force` is available only for an intentional local replacement.
 
 ## Quick fixes
 
 | Problem | Fix |
 |---|---|
-| Grok buttons are missing | Wire `Plan → H3 Grok Bridge → Scene Prompt Editor`, then refresh the UI. |
-| Project not found | Click **Grok Send** first and use the project name shown in the editor status. |
-| New image is missing locally | Click **Grok Send**, then run `h3-grok pull` again. |
-| Grok says edits are staged | Click **Grok Pull** in the connected Prompt Editor. |
-| Pull protects a local file | Send the edit first, or use `--force` only if you intend to discard it. |
+| Editor buttons are missing | Use **Edit with Grok** on the bridge node. If neither appears, refresh the UI after installing the update. |
+| Project not found | Click **Edit with Grok** first and use the command it provides. |
+| Sync says edits are waiting | Keep the connected editor open, then rerun `h3-grok sync` or click **Grok Pull**. |
+| The live Plan changed | Keep your local drafts. Reconcile the conflicting changes before retrying; `h3-grok cancel` clears a pending remote edit when you choose to discard it. |
+| New image is missing locally | Run `h3-grok pull` in the workspace after the connected editor publishes the change. |
+| Pull protects a local file | Sync the edit first, or use `--force` only if you intend to discard it. |
+
+<details>
+<summary>Manual staging and refresh commands</summary>
+
+`h3-grok pull` refreshes an existing workspace using its saved connection. For a
+new workspace, use `h3-grok pull <server> <project> [directory]`.
+
+`h3-grok send` retains the staged-only workflow: it uploads edits but waits for
+**Grok Pull** in ComfyUI. Use it when you want a separate manual apply step.
+`h3-grok sync --scene <scene-id>` sends only the selected scene.
+
+`h3-grok cancel` discards the pending remote change set while preserving local
+scene files and the live Plan. It does not resolve differences between them;
+keep your draft and reconcile it before pulling fresh context. Run
+`h3-grok --help` for all commands.
+
+</details>
 
 <details>
 <summary>Remote ComfyUI and authentication</summary>
@@ -109,8 +151,8 @@ Use the reachable ComfyUI URL instead of `127.0.0.1`:
 
 ```bash
 export COMFYUI_API_TOKEN='...'
-h3-grok pull https://comfy.example my_project
-h3-grok send my_project
+h3-grok edit https://comfy.example my_project
+h3-grok sync my_project
 ```
 
 The token is never stored in the project folder or workflow. Do not expose an
